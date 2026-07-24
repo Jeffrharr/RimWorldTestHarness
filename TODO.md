@@ -1,14 +1,50 @@
 # TODO
 
 Status: all pieces are implemented and offline-tested (`Shared/`, `Mod/`, `Runner/run_test.sh`,
-`Tests/RimWorldTestHarness.Tests`, `Tests/RimWorldTestHarness.ApiTests`). What's left is entirely
-gated on a manual, non-scriptable step:
+`Tests/RimWorldTestHarness.Tests`, `Tests/RimWorldTestHarness.ApiTests`). Remaining work:
 
-- [ ] **First fixture save** — `Fixtures/minimal_colony.rws`, created manually per
-  `Fixtures/README.md`. Blocks the one remaining item below.
-- [ ] **Live end-to-end run** — once the fixture exists, run
-  `Runner/run_test.sh Scenarios/shadow_lean_equinox.json` and confirm it exits 0, prints
-  `shadow_lean: PASS`, and leaves a screenshot under `Runner/reports/`.
+- [x] **First fixture save** — `Fixtures/minimal_colony.rws` is now in place, copied from the
+  user's newest live colony save ("Tehenussia Unification"). Note it's a real, mod-heavy
+  permadeath colony, *not* a minimal one — good enough to unblock live runs, but see the fixture
+  ideas below for why we'll want something leaner and reproducible.
+- [x] **Live end-to-end run** — `Runner/run_test.sh Scenarios/shadow_lean_equinox.json` passes
+  against the fixture: exits 0, `shadow_lean: PASS` (actual `1.02e-06`, tol `0.02`), screenshot in
+  `Runner/reports/`. Confirmed the mod-heavy fixture loads cleanly under the minimal ModsConfig.
+
+## Fixture ideas (future)
+
+The current fixture is whatever save happened to be newest — heavy, tied to the user's exact
+active mod list, and not something a fresh checkout can regenerate. Directions to make the
+fixture story self-serve instead of manual:
+
+- [ ] **Quickstart / no-fixture mode** (lightest — for when the colony doesn't matter) — for
+  lighting scenarios the specific colony is irrelevant: `Patch_ForcedLatitude` already overrides
+  latitude and the `SetSeason`/`SetTime` steps drive the clock, so only the sky matters. Add a
+  scenario flag (e.g. `"fixture": "quickstart"` or a top-level `"quickstart": true`) that skips
+  the autostart-save drop entirely and instead launches RimWorld with the vanilla `quicktest`
+  command-line arg. `Verse.QuickStarter.CheckQuickStart()` sees that arg and jumps straight to the
+  Play scene, where `Root_Play.SetupForQuickTestPlay()` generates a throwaway Crashlanded colony
+  (0.3 planet coverage, random seed, Cassandra/Rough) with no save file. Removes the manual
+  fixture prerequisite for the common case; the seed is random but that's fine since latitude is
+  forced (pin the seed later only if a scenario needs determinism).
+- [ ] **Generate a save from JSON params** (preferred when the colony *does* matter) — extend the
+  harness so a scenario (or a
+  companion `FixtureSpec`) declares the world/colony parameters (seed, biome, latitude, tile,
+  starting pawns, scenario preset) and the driver programmatically creates + saves a colony via
+  RimWorld's own worldgen/`Game`/`GameDataSaveLoader` APIs on first run, caching the result under
+  `Fixtures/`. Removes the one manual, non-scriptable prerequisite entirely and makes fixtures
+  reproducible and diffable. Pairs naturally with the existing `SetTile`/`SetSeason`/`SetTime`
+  step vocabulary.
+- [ ] **Ship a committed minimal fixture** — as a fallback, a genuinely small vanilla-only colony
+  save checked into git (or generated once and committed) so runs don't depend on the user's
+  Steam Workshop mod set.
+- [ ] **Scene setup: place objects/pawns on load** — a scenario step (or `FixtureSpec` field) to
+  spawn specified things at map load: e.g. a row of walls/pillars on flat ground as deliberate
+  shadow-casters, or pawns at known positions. The `shadow_lean_equinox` run showed the weakness —
+  the fixture's flat sand had almost nothing tall, so the shadow lean was hard to eyeball even
+  though the probe passed. Purpose-built casters would make lighting screenshots (shadow
+  direction, night darkness, moonlight tint, twilight hue) genuinely reviewable, not just
+  numerically gated. Pairs with quickstart mode (generate blank colony → place casters → assert).
 
 ## Done
 

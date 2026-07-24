@@ -24,8 +24,17 @@ Two complementary verification modes, driven by one JSON `ScenarioSpec` format
    can't easily capture (does this twilight color actually *look* warm and long, not just measure
    as such) and are meant to be reviewed by a human or by Claude afterward.
 
-Both modes share one spec format and one report format (`Shared/ScenarioReport.cs`) so a single
-scenario run can produce both at once.
+3. **Before/after A/B via feature toggles.** A visual effect is hard to judge from a single frame —
+   "is this warm?" only means something next to the same scene *without* the effect. A `SetFeature`
+   step flips a named runtime flag in the mod under test (through `Mod/Features/FeatureRegistry`,
+   the same one-directional bridge as `IProbe`/`ProbeRegistry` — the harness never references the
+   mod), so one scenario in a single game boot can screenshot the effect off, flip it on, and
+   screenshot again. The two frames come from an identical world/time, so the only difference is the
+   effect. The same flags are what the mod's real settings screen drives for users, so the toggle
+   seam isn't test-only scaffolding. See `civil_twilight_dusk.json` for the pattern.
+
+All modes share one spec format and one report format (`Shared/ScenarioReport.cs`) so a single
+scenario run can produce all of them at once.
 
 ## Why a separate project, not bolted onto CelestialLighting
 
@@ -48,7 +57,9 @@ tested, the live-game plumbing is validated by actually running it.
   `Root_Play.Update()` — see "Save loading" below for why it has to be tick-driven rather than
   running synchronously at startup), `Patch_ForceDevMode`/`Patch_ForcedLatitude` (narrow Harmony
   postfixes the driver's `SetTile` step and the vanilla autostart-save check depend on),
-  `Probes/IProbe` + `ProbeRegistry` (the extension point other mods use to expose numeric probes).
+  `Probes/IProbe` + `ProbeRegistry` (the extension point other mods use to expose numeric probes),
+  `Features/FeatureRegistry` (the parallel extension point for `SetFeature` — mods register named
+  `Action<bool>` flag setters so scenarios can toggle effects for before/after screenshots).
 - **`Runner/run_test.sh`** — the external driver: launches RimWorld with a scenario, waits for
   completion, gates on the report. Modeled on `MissileGirl/TestMods/run_test.sh`'s proven
   launch/retry/log-wait/cleanup shape, adapted for a lighter single-scenario run and (unlike that
