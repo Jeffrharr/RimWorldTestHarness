@@ -25,4 +25,8 @@ public static class StepArgs
 
     public const string ScreenshotType = "Screenshot";
     public const string ScreenshotFileName = "fileName"; // written under the run's report folder
+
+    public const string SetFeatureType = "SetFeature";
+    public const string SetFeatureName = "featureName"; // must match a setter registered in FeatureRegistry
+    public const string SetFeatureEnabled = "enabled";  // bool: "true"/"false"
 }

@@ -16,7 +16,7 @@ public static class Patch_ForcedLatitude
 {
     static void Postfix(ref Vector2 __result)
     {
-        if (ScenarioDriver.ForcedLatitude is float latitude)
+        if (HarnessRuntime.ForcedLatitude is float latitude)
             __result.y = latitude;
     }
 }

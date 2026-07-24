@@ -1,28 +1,26 @@
 using System.IO;
 using System.Text.Json;
-using RimWorld;
-using RimWorldTestHarness.Mod.Probes;
 using RimWorldTestHarness.Shared;
 using UnityEngine;
 using Verse;
 
 namespace RimWorldTestHarness.Mod;
 
-// The tick-driven state machine that actually replays a ScenarioSpec's steps against a live game.
-// [StaticConstructorOnStartup] (HarnessMod) fires before any scene/map exists, so nothing here can
-// run synchronously from there — Patch_DriveScenario's Root_Play.Update() postfix calls Tick()
-// every frame instead, and this class advances one step at a time as each step's wait condition
-// (map loaded, screenshot flush, FastForward's tick target) is satisfied. No HarmonyLib dependency
-// here on purpose — the live-game hookup lives entirely in Patch_DriveScenario/Patch_ForceDevMode/
-// Patch_ForcedLatitude, mirroring the pure-core/thin-adapter split the parent CLAUDE.md asks for,
-// even though this class still touches Verse/UnityEngine types directly (it IS the impure side —
-// Shared/ is the pure half).
+// The tick-driven state machine that replays a ScenarioSpec's steps against a live game (the BATCH
+// verification mode). [StaticConstructorOnStartup] (HarnessMod) fires before any scene/map exists,
+// so nothing here can run synchronously from there — Patch_DriveScenario's Root_Play.Update()
+// postfix calls Tick() every frame instead, and this class advances one step at a time as each
+// step's wait condition (map loaded, screenshot flush, FastForward's tick target) is satisfied.
+//
+// The actual per-action game logic lives in the shared StepExecutor (so batch and the interactive
+// LiveCommandDriver can never drift); this class only owns the batch concerns: sequencing the
+// scenario's steps, the DevMode/latitude flags via HarnessRuntime, and folding each StepOutcome
+// into a ScenarioReport.
 public static class ScenarioDriver
 {
-    // Read by Patch_ForceDevMode / Patch_ForcedLatitude, which stay generic Harmony postfixes —
-    // this class is the only thing that knows whether a scenario is actually running.
+    // Read by Tick's own gating. Patch_ForceDevMode/Patch_ForcedLatitude read HarnessRuntime, not
+    // this — those flags are shared with the live driver.
     public static bool Active { get; private set; }
-    public static float? ForcedLatitude { get; private set; }
 
     private enum State { WaitingForMap, Running, Done }
 
@@ -38,6 +36,10 @@ public static class ScenarioDriver
     public static void Begin(ScenarioSpec spec, string reportPath)
     {
         Active = true;
+        // Batch mode forces DevMode so vanilla's autostart-save mechanism loads the fixture. Set it
+        // synchronously here, before any scene loads, so it's true in time for Root_Entry.Start()'s
+        // autostart check (see DESIGN.md).
+        HarnessRuntime.ForceDevMode = true;
         _spec = spec;
         _reportPath = reportPath;
         _report = new ScenarioReport { ScenarioName = spec.Name };
@@ -96,92 +98,51 @@ public static class ScenarioDriver
 
     private static void RunStep(ScenarioStep step)
     {
-        switch (step.Type)
+        StepContext ctx = new StepContext(Find.CurrentMap, ResolveScreenshotPath);
+        StepOutcome outcome = StepExecutor.Execute(step.Type, step.Args, ctx);
+        ApplyOutcome(step, outcome);
+    }
+
+    // Screenshots for a batch run land next to the report file, keeping every artifact of one run in
+    // the same Runner/reports/ folder.
+    private static string ResolveScreenshotPath(string fileName)
+    {
+        string dir = Path.GetDirectoryName(_reportPath!) ?? ".";
+        return Path.Combine(dir, fileName);
+    }
+
+    private static void ApplyOutcome(ScenarioStep step, StepOutcome outcome)
+    {
+        if (outcome.Error != null)
         {
-            case StepArgs.SetTileType:
-                RunSetTile(step);
-                break;
-            case StepArgs.SetSeasonType:
-                RunSetSeason(step);
-                break;
-            case StepArgs.SetTimeType:
-                RunSetTime(step);
-                break;
-            case StepArgs.FastForwardType:
-                RunFastForward(step);
-                break;
-            case StepArgs.ProbeType:
-                RunProbe(step);
-                break;
-            case StepArgs.ScreenshotType:
-                RunScreenshot(step);
-                break;
-            default:
-                _report!.Errors.Add($"Unknown step type '{step.Type}'");
-                break;
-        }
-    }
-
-    // A scenario just overrides latitude in place (Patch_ForcedLatitude) rather than actually
-    // regenerating the fixture's landing tile — see Patch_ForcedLatitude.cs and
-    // Fixtures/README.md for why.
-    private static void RunSetTile(ScenarioStep step)
-    {
-        ForcedLatitude = float.Parse(step.Args[StepArgs.SetTileLatitude]);
-    }
-
-    private static void RunSetSeason(ScenarioStep step)
-    {
-        int dayOfYear = int.Parse(step.Args[StepArgs.SetSeasonDayOfYear]);
-        float longitude = CurrentLongitude();
-        float currentHour = GenDate.HourFloat(Find.TickManager.TicksAbs, longitude);
-        JumpToLocalTime(dayOfYear, currentHour, longitude);
-    }
-
-    private static void RunSetTime(ScenarioStep step)
-    {
-        float hour = float.Parse(step.Args[StepArgs.SetTimeHour]);
-        float longitude = CurrentLongitude();
-        int currentDayOfYear = GenDate.DayOfYear(Find.TickManager.TicksAbs, longitude);
-        JumpToLocalTime(currentDayOfYear, hour, longitude);
-    }
-
-    private static void RunFastForward(ScenarioStep step)
-    {
-        int ticks = int.Parse(step.Args[StepArgs.FastForwardTicks]);
-        _fastForwardTargetTicksGame = Find.TickManager.TicksGame + ticks;
-        _waitingForFastForward = true;
-        // Unlike SetSeason/SetTime (which jump the clock directly), FastForward needs real ticks
-        // to actually pass, so make sure the game isn't sitting paused while we wait.
-        Find.TickManager.CurTimeSpeed = TimeSpeed.Superfast;
-    }
-
-    private static void RunProbe(ScenarioStep step)
-    {
-        string probeName = step.Args[StepArgs.ProbeName];
-        float expected = float.Parse(step.Args[StepArgs.ProbeExpectedValue]);
-        float tolerance = float.Parse(step.Args[StepArgs.ProbeTolerance]);
-
-        if (!ProbeRegistry.TryGet(probeName, out IProbe? probe) || probe == null)
-        {
-            _report!.Errors.Add($"No probe registered named '{probeName}'");
+            _report!.Errors.Add(outcome.Error);
             return;
         }
 
-        float actual = probe.Read(Find.CurrentMap);
-        _report!.ProbeChecks.Add(ReportComparer.CheckProbe(probeName, actual, expected, tolerance));
-    }
+        if (outcome.ForcedLatitude is float latitude)
+            HarnessRuntime.ForcedLatitude = latitude;
 
-    private static void RunScreenshot(ScenarioStep step)
-    {
-        string fileName = step.Args[StepArgs.ScreenshotFileName];
-        string dir = Path.GetDirectoryName(_reportPath!) ?? ".";
-        string path = Path.Combine(dir, fileName);
-        ScreenCapture.CaptureScreenshot(path);
-        _report!.ScreenshotPaths.Add(path);
-        // CaptureScreenshot writes asynchronously over the next few frames — give it time to
-        // flush before the next step (or Finish()) runs.
-        _flushFramesRemaining = 5;
+        if (outcome.ProbeValue is float actual)
+        {
+            // The raw reading comes from the shared executor; the pass/fail comparison against this
+            // step's expected/tolerance is batch-specific and stays here.
+            string probeName = step.Args[StepArgs.ProbeName];
+            float expected = float.Parse(step.Args[StepArgs.ProbeExpectedValue]);
+            float tolerance = float.Parse(step.Args[StepArgs.ProbeTolerance]);
+            _report!.ProbeChecks.Add(ReportComparer.CheckProbe(probeName, actual, expected, tolerance));
+        }
+
+        if (outcome.ScreenshotPath != null)
+            _report!.ScreenshotPaths.Add(outcome.ScreenshotPath);
+
+        if (outcome.WaitFrames > 0)
+            _flushFramesRemaining = outcome.WaitFrames;
+
+        if (outcome.WaitFastForward)
+        {
+            _waitingForFastForward = true;
+            _fastForwardTargetTicksGame = outcome.FastForwardTargetTicksGame;
+        }
     }
 
     private static void Finish()
@@ -194,29 +155,9 @@ public static class ScenarioDriver
         // answer without needing to go find the report.
         Log.Message("RWTH: scenario complete");
         Active = false;
+        // Release the batch-only flags so nothing leaks past the run.
+        HarnessRuntime.ForceDevMode = false;
+        HarnessRuntime.ForcedLatitude = null;
         Application.Quit();
     }
-
-    private static float CurrentLongitude() => Find.WorldGrid.LongLatOf(Find.CurrentMap.Tile).x;
-
-    // Jumps the game clock so GenDate.DayOfYear/HourFloat read back exactly dayOfYear/hour at the
-    // given longitude, staying within the current in-game year. This mirrors GenDate's own
-    // DayOfYear/HourOfDay derivation (PositiveModRemap over TicksAbs + a longitude offset) in
-    // reverse — see the decompiled reference in the harness's implementation plan doc.
-    private static void JumpToLocalTime(int dayOfYear, float hour, float longitude)
-    {
-        long offset = GenDate.LocalTicksOffsetFromLongitude(longitude);
-        long currentAbs = Find.TickManager.TicksAbs;
-        long currentLocal = currentAbs + offset;
-        long yearStart = currentLocal - PositiveMod(currentLocal, GenDate.TicksPerYear);
-
-        int dayTick = Mathf.Clamp(Mathf.RoundToInt(hour * GenDate.TicksPerHour), 0, GenDate.TicksPerDay - 1);
-        long targetLocal = yearStart + (long)dayOfYear * GenDate.TicksPerDay + dayTick;
-        long targetAbs = targetLocal - offset;
-
-        long gameStartAbsTick = currentAbs - Find.TickManager.TicksGame;
-        Find.TickManager.DebugSetTicksGame((int)(targetAbs - gameStartAbsTick));
-    }
-
-    private static long PositiveMod(long value, long modulus) => ((value % modulus) + modulus) % modulus;
 }

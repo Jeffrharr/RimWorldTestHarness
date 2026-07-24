@@ -13,7 +13,9 @@ public static class Patch_ForceDevMode
 {
     static void Postfix(ref bool __result)
     {
-        if (ScenarioDriver.Active)
+        // HarnessRuntime.ForceDevMode is set only by the BATCH ScenarioDriver, never by the live
+        // companion — the companion runs against the user's real game and must not flip DevMode.
+        if (HarnessRuntime.ForceDevMode)
             __result = true;
     }
 }
