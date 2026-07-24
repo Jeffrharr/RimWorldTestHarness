@@ -7,7 +7,7 @@ Status: all pieces are implemented and offline-tested (`Shared/`, `Mod/`, `Runne
   user's newest live colony save ("Tehenussia Unification"). Note it's a real, mod-heavy
   permadeath colony, *not* a minimal one — good enough to unblock live runs, but see the fixture
   ideas below for why we'll want something leaner and reproducible.
-- [x] **Live end-to-end run** — `Runner/run_test.sh Scenarios/shadow_lean_equinox.json` passes
+- [x] **Live end-to-end run** — `Runner/run_test.sh ../CelestialLighting/Tests/Scenarios/shadow_lean_equinox.json` passes
   against the fixture: exits 0, `shadow_lean: PASS` (actual `1.02e-06`, tol `0.02`), screenshot in
   `Runner/reports/`. Confirmed the mod-heavy fixture loads cleanly under the minimal ModsConfig.
 - [x] **Verify timelapse settle frames against a real run** — confirmed live via CelestialLighting's

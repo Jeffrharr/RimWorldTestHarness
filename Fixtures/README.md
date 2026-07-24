@@ -21,4 +21,5 @@ save stays easy to regenerate if it ever needs updating for a new RimWorld versi
 
 ## Fixtures needed so far
 
-- `minimal_colony.rws` — referenced by `Scenarios/shadow_lean_equinox.json`. Not yet created.
+- `minimal_colony.rws` — the default `saveFile` for scenarios across repos (the harness's own
+  demos and CelestialLighting's `Tests/Scenarios/*.json`). In place (copied from a live colony save).

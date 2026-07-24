@@ -7,7 +7,10 @@ list instead of adding a scenario JSON field, since which mods it activates isn'
 "what to script in-game".
 
 ```bash
-./run_test.sh ../Scenarios/shadow_lean_equinox.json
+# A scenario path is just an arg, so mod-specific scenarios live in the mod's own repo:
+./run_test.sh ../../CelestialLighting/Tests/Scenarios/shadow_lean_equinox.json
+# The harness's own modset-agnostic demos still live here:
+./run_test.sh ../Scenarios/daycycle_timelapse.json
 ```
 
 Requires the scenario's `Fixtures/<saveFile>` to already exist (see `Fixtures/README.md` — manual,

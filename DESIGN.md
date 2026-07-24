@@ -33,8 +33,8 @@ Two complementary verification modes, driven by one JSON `ScenarioSpec` format
    effect. The same flags are what the mod's real settings screen drives for users, so the toggle
    seam isn't test-only scaffolding. See CelestialLighting's
    `Tests/Scenarios/civil_twilight_dusk.json` for a worked example — mod-specific scenarios live in
-   the mod's own repo (they name that mod's probes/features); only this harness's generic demo
-   scenarios (`shadow_lean_equinox`, `daycycle_timelapse`) live here.
+   the mod's own repo (they name that mod's probes/features); only this harness's generic,
+   modset-agnostic demo scenarios (e.g. `daycycle_timelapse`) live here.
 
 All modes share one spec format and one report format (`Shared/ScenarioReport.cs`) so a single
 scenario run can produce all of them at once.
