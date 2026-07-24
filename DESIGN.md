@@ -31,7 +31,10 @@ Two complementary verification modes, driven by one JSON `ScenarioSpec` format
    mod), so one scenario in a single game boot can screenshot the effect off, flip it on, and
    screenshot again. The two frames come from an identical world/time, so the only difference is the
    effect. The same flags are what the mod's real settings screen drives for users, so the toggle
-   seam isn't test-only scaffolding. See `civil_twilight_dusk.json` for the pattern.
+   seam isn't test-only scaffolding. See CelestialLighting's
+   `Tests/Scenarios/civil_twilight_dusk.json` for a worked example — mod-specific scenarios live in
+   the mod's own repo (they name that mod's probes/features); only this harness's generic demo
+   scenarios (`shadow_lean_equinox`, `daycycle_timelapse`) live here.
 
 All modes share one spec format and one report format (`Shared/ScenarioReport.cs`) so a single
 scenario run can produce all of them at once.

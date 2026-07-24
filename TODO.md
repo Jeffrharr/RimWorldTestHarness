@@ -10,8 +10,8 @@ Status: all pieces are implemented and offline-tested (`Shared/`, `Mod/`, `Runne
 - [x] **Live end-to-end run** — `Runner/run_test.sh Scenarios/shadow_lean_equinox.json` passes
   against the fixture: exits 0, `shadow_lean: PASS` (actual `1.02e-06`, tol `0.02`), screenshot in
   `Runner/reports/`. Confirmed the mod-heavy fixture loads cleanly under the minimal ModsConfig.
-- [x] **Verify timelapse settle frames against a real run** — confirmed live via
-  `Scenarios/civil_twilight_dusk_timelapse.json` (two 24-frame dusk sweeps, lat 75 day 15, feature
+- [x] **Verify timelapse settle frames against a real run** — confirmed live via CelestialLighting's
+  `Tests/Scenarios/civil_twilight_dusk_timelapse.json` (two 24-frame dusk sweeps, lat 75 day 15, feature
   off then on). Across all 48 frames `settleFrames: 2` showed no smearing or half-updated lighting
   after each clock jump, and `screenshotMode` cleanly blanked the HUD (no toolbar/alerts/date
   readout/colonist bar). Both mp4s stitched fine at 8fps. Raise `settleFrames` only if a future
