@@ -1,0 +1,14 @@
+{
+  "name": "civil_twilight_dusk_timelapse",
+  "saveFile": "minimal_colony.rws",
+  "steps": [
+    { "type": "SetTile", "args": { "latitude": "75" } },
+    { "type": "SetSeason", "args": { "dayOfYear": "15" } },
+
+    { "type": "SetFeature", "args": { "featureName": "civil_twilight", "enabled": "false" } },
+    { "type": "Timelapse", "args": { "fromHour": "16", "toHour": "22", "stepHours": "0.25", "fileNamePrefix": "civil_twilight_dusk_off", "fps": "8" } },
+
+    { "type": "SetFeature", "args": { "featureName": "civil_twilight", "enabled": "true" } },
+    { "type": "Timelapse", "args": { "fromHour": "16", "toHour": "22", "stepHours": "0.25", "fileNamePrefix": "civil_twilight_dusk_on", "fps": "8" } }
+  ]
+}

@@ -9,6 +9,8 @@
     { "type": "SetFeature", "args": { "featureName": "civil_twilight", "enabled": "false" } },
     { "type": "Screenshot", "args": { "fileName": "civil_twilight_off.png" } },
     { "type": "SetFeature", "args": { "featureName": "civil_twilight", "enabled": "true" } },
-    { "type": "Screenshot", "args": { "fileName": "civil_twilight_on.png" } }
+    { "type": "Screenshot", "args": { "fileName": "civil_twilight_on.png" } },
+    { "type": "SetTime", "args": { "hour": "20" } },
+    { "type": "Probe", "args": { "probeName": "civil_twilight", "expectedValue": "0", "tolerance": "0.02" } }
   ]
 }
