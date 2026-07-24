@@ -12,3 +12,14 @@ public interface IProbe
 
     float Read(Map map);
 }
+
+// Optional companion a probe MAY also implement so the live catalog can describe it to a human/Claude
+// (what the number means, what unit it's in). Kept a separate interface rather than adding members to
+// IProbe because Mono/net481 can't execute C# default-interface-method bodies at runtime, so widening
+// IProbe would force every existing probe (e.g. CelestialLighting's ShadowLeanProbe) to add members.
+// The catalog builder does a plain `probe is IProbeMetadata` check.
+public interface IProbeMetadata
+{
+    string? Description { get; }
+    string? Unit { get; }
+}

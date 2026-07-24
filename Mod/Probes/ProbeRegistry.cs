@@ -13,4 +13,8 @@ public static class ProbeRegistry
     public static void Register(IProbe probe) => Probes[probe.Name] = probe;
 
     public static bool TryGet(string name, out IProbe? probe) => Probes.TryGetValue(name, out probe);
+
+    // Enumerated by the live channel's catalog builder so a client can see exactly which probes the
+    // currently-loaded modset exposes (the whole point of the dynamic catalog).
+    public static IEnumerable<IProbe> All => Probes.Values;
 }

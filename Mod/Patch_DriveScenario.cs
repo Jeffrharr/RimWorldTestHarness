@@ -10,5 +10,12 @@ namespace RimWorldTestHarness.Mod;
 [HarmonyPatch(typeof(Root_Play), nameof(Root_Play.Update))]
 public static class Patch_DriveScenario
 {
-    static void Postfix() => ScenarioDriver.Tick();
+    static void Postfix()
+    {
+        // Both drivers pump off this same per-frame hook. They're mutually exclusive at runtime:
+        // ScenarioDriver.Tick() no-ops unless a batch scenario is Active, and LiveCommandDriver.Tick()
+        // no-ops (and bails outright when a scenario is Active) unless the live channel setting is on.
+        ScenarioDriver.Tick();
+        LiveCommandDriver.Tick();
+    }
 }
