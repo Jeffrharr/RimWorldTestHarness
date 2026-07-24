@@ -1,0 +1,11 @@
+1.6/Assemblies/
+Shared/obj/
+Shared/bin/
+Mod/obj/
+Mod/bin/
+Runner/reports/
+Tests/**/obj/
+Tests/**/bin/
+Fixtures/*.rws
+.tokensave/
+.claude/

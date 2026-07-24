@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <AssemblyName>RimWorldTestHarness.Shared</AssemblyName>
+    <RootNamespace>RimWorldTestHarness.Shared</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- netstandard2.0 (not net8.0) so this compiles into both the Mod (net481, runs inside
+         RimWorld) and the Tests project (net8.0) without duplicating logic — same reason
+         HarmonyConflictChecker's Shared project uses it. -->
+    <PackageReference Include="System.Text.Json" Version="8.*" />
+  </ItemGroup>
+</Project>

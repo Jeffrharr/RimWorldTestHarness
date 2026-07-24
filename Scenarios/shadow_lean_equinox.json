@@ -1,0 +1,11 @@
+{
+  "name": "shadow_lean_equinox",
+  "saveFile": "minimal_colony.rws",
+  "steps": [
+    { "type": "SetTile", "args": { "latitude": "55" } },
+    { "type": "SetSeason", "args": { "dayOfYear": "15" } },
+    { "type": "SetTime", "args": { "hour": "15" } },
+    { "type": "Probe", "args": { "probeName": "shadow_lean", "expectedValue": "0", "tolerance": "0.02" } },
+    { "type": "Screenshot", "args": { "fileName": "shadow_lean_equinox.png" } }
+  ]
+}

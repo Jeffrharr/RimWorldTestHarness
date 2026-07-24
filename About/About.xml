@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ModMetaData>
+  <name>RimWorld Test Harness</name>
+  <author>Joof</author>
+  <packageId>joof.rimworldtestharness</packageId>
+  <supportedVersions>
+    <li>1.6</li>
+  </supportedVersions>
+  <modDependencies>
+    <li>
+      <packageId>brrainz.harmony</packageId>
+      <displayName>Harmony</displayName>
+    </li>
+  </modDependencies>
+  <description>Dev-only automation harness. Loads a scripted scenario (save file, tile/season/time,
+scripted actions), runs numeric probes and/or screenshots against another mod under test, and
+writes a JSON report. Not intended for normal play — enabled only by the Runner scripts under
+Runner/ when running an automated test pass.
+
+Not published to Workshop.</description>
+  <loadAfter>
+    <li>Ludeon.RimWorld</li>
+    <li>Ludeon.RimWorld.Royalty</li>
+    <li>Ludeon.RimWorld.Ideology</li>
+    <li>Ludeon.RimWorld.Biotech</li>
+    <li>Ludeon.RimWorld.Anomaly</li>
+    <li>brrainz.harmony</li>
+    <!-- Must load after whichever mod under test is being probed, so its patches/state are
+         already applied when a scenario's probes read them. The Runner's per-scenario ModsConfig
+         is responsible for actually ordering this correctly; this is just the soft declaration. -->
+  </loadAfter>
+</ModMetaData>

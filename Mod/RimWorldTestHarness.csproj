@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net481</TargetFramework>
+    <AssemblyName>RimWorldTestHarness</AssemblyName>
+    <RootNamespace>RimWorldTestHarness.Mod</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <OutputPath>../1.6/Assemblies</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Krafs.Rimworld.Ref" Version="1.6.*" />
+    <!-- Compile-time only: depend on the standalone brrainz.harmony Workshop mod (declared as a
+         hard <modDependencies> requirement in About.xml) providing 0Harmony.dll at runtime instead
+         of bundling our own copy, which would risk two different Harmony versions loading into the
+         same AppDomain as whichever mod under test is also active. 0Harmony is not strong-named
+         (PublicKeyToken=null), so Mono ignores the AssemblyVersion baked into our reference and
+         binds to whatever 0Harmony is loaded — the exact "2.3.*"-vs-installed version does not
+         matter; what matters is that brrainz.harmony loads before us (ensured via
+         <modDependencies>/<loadAfter> in About.xml). A TypeLoadException naming our reference's
+         version is a load-order symptom, not a version mismatch. See CelestialLighting's
+         Source/CelestialLighting.csproj for the full write-up. -->
+    <PackageReference Include="Lib.Harmony" Version="2.3.*" ExcludeAssets="runtime" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Shared/Shared.csproj" />
+  </ItemGroup>
+
+</Project>
