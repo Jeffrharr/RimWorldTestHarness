@@ -168,6 +168,58 @@ null` before advancing past `State.WaitingForMap`.
 pure headless/`-batchmode -nographics` launch (the mode `MissileGirl/TestMods/run_test.sh` uses,
 since it only needs Player.log output). `Runner/run_test.sh` launches normally instead.
 
+## Timelapse: video as a clock sweep, not a screen recording
+
+A `Timelapse` step produces a video of the map over a span of hours. It is the only composite step:
+`Shared/TimelapseExpander.cs` desugars it at load time into one `SetTime` → `Wait` → `Screenshot`
+triple per frame, and `Runner/run_test.sh` stitches the resulting PNG sequence with ffmpeg after the
+run. Nothing new touches the game — `StepExecutor` and `ScenarioDriver` are unchanged, and the whole
+feature is unit-tested offline because the interesting part is pure string/number work.
+
+Sweeping the **clock** rather than recording wall-clock time is the substantive choice. The harness
+already jumps the clock deterministically (`DebugSetTicksGame`), so a clock-swept sequence is
+frame-aligned and reproducible: the same scenario against two builds of a mod under test yields two
+videos comparable frame-for-frame. A real-time recording drifts with framerate and can't do that.
+
+It's also the only approach that works here at all. This is a Wayland session, so capturing the game
+window from outside needs either `kmsgrab` (elevated privileges) or a PipeWire portal (an
+interactive permission prompt) — both hostile to an unattended run, and `x11grab` under XWayland
+generally returns black.
+
+Two deliberate semantics, both covered by tests:
+
+- The hour range is **half-open**, `[fromHour, toHour)`, so a `0 → 24` sweep gives 24 distinct
+  frames rather than 25 with midnight duplicated at each end, and the video loops seamlessly.
+- Unknown arg keys are **rejected**, not ignored. `Args` is case-sensitive, so a `stephours` typo
+  would otherwise silently fall back to the default and produce a plausible-but-wrong video — the
+  worst failure mode for a verification tool.
+
+A malformed `Timelapse` is left un-expanded rather than dropped: the reason lands in
+`ScenarioSpec.LoadErrors` → the report, and `StepExecutor` fails the leftover step, so a run can't
+come back green having silently skipped an entire sweep.
+
+`settleFrames` (default 2) exists because a clock jump doesn't necessarily update the glow grid and
+shadow direction within the same frame, and a capture taken too eagerly would record stale lighting.
+The default is a reasoned guess, not a measured one — it wants confirming against a real run.
+
+## Screenshots hide the UI by default
+
+`HarnessDebugActions.CaptureScreenshotTo(path, hideUi)` drives vanilla's own screenshot mode
+(`Find.UIRoot.screenshotMode.Active`), which suppresses the dev toolbar, colonist bar, main buttons,
+alerts, letters, tutor, messages and tooltips. Batch runs force `Prefs.DevMode` on, so without this
+every capture carries the dev toolbar over the map — noise in one screenshot, and 48× the noise in a
+timelapse. Scenarios opt back in with `"hideUi": "false"` when the UI is what's under test.
+
+Setting the flag in the same frame as the capture is safe because Unity runs `Update` (where the
+driver pumps steps) before `OnGUI` and rendering, so the frame grabbed at end-of-frame is already
+clean.
+
+It defaults to **off** at the capture core so the two interactive callers are unaffected: the
+dev-menu `[DebugAction]` behaves as it always has, and the live channel points at a real player's
+running game, where a hidden UI would be a nasty surprise. Only the batch path opts in, and it
+doesn't restore the flag inline (the capture finishes over later frames) — `ScenarioDriver.Finish`
+clears it at end of run.
+
 ## API compatibility tests
 
 `Tests/RimWorldTestHarness.ApiTests/` (Mono.Cecil, pattern:

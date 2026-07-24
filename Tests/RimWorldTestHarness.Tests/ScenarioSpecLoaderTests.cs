@@ -39,6 +39,45 @@ public class ScenarioSpecLoaderTests
         Assert.That(spec.RequiredMods, Is.Empty);
     }
 
+    // The loader is the single choke point where composite steps are desugared, so by the time a
+    // driver sees a spec there are only primitive steps left.
+    [Test]
+    public void LoadFromJson_ExpandsTimelapseIntoPrimitiveSteps()
+    {
+        const string json = """
+        {
+          "name": "daycycle",
+          "steps": [
+            { "type": "Timelapse", "args": { "toHour": "3", "fileNamePrefix": "dc", "settleFrames": "0" } }
+          ]
+        }
+        """;
+
+        ScenarioSpec spec = ScenarioSpecLoader.LoadFromJson(json);
+
+        Assert.That(spec.LoadErrors, Is.Empty);
+        Assert.That(spec.Steps.Any(s => s.Type == "Timelapse"), Is.False);
+        Assert.That(spec.Steps.Select(s => s.Type),
+            Is.EqualTo(new[] { "SetTime", "Screenshot", "SetTime", "Screenshot", "SetTime", "Screenshot" }));
+        Assert.That(spec.Steps[1].Args["fileName"], Is.EqualTo("dc_0000.png"));
+    }
+
+    [Test]
+    public void LoadFromJson_InvalidTimelapse_SurfacesLoadErrorAndKeepsStep()
+    {
+        const string json = """
+        {
+          "steps": [ { "type": "Timelapse", "args": { "stepHours": "0" } } ]
+        }
+        """;
+
+        ScenarioSpec spec = ScenarioSpecLoader.LoadFromJson(json);
+
+        Assert.That(spec.LoadErrors, Has.Count.EqualTo(1));
+        Assert.That(spec.Steps, Has.Count.EqualTo(1));
+        Assert.That(spec.Steps[0].Type, Is.EqualTo("Timelapse"));
+    }
+
     [Test]
     public void LoadFromJson_ParsesRequiredMods()
     {

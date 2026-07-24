@@ -87,6 +87,15 @@ public static class StepExecutor
                 return Screenshot(args, ctx);
             case StepArgs.SetFeatureType:
                 return SetFeature(args);
+            case StepArgs.WaitType:
+                return Wait(args);
+            case StepArgs.TimelapseType:
+                // TimelapseExpander desugars these at load time, so one reaching the executor means
+                // its args failed validation and it was deliberately left un-expanded. The specific
+                // reason is already in the report via ScenarioSpec.LoadErrors; this makes the step
+                // itself fail too, so the run can't look complete while a whole sweep is missing.
+                return StepOutcome.Fail(
+                    "Timelapse step was not expanded — its args are invalid (see the earlier load error)");
             default:
                 return StepOutcome.Fail($"Unknown action type '{actionType}'");
         }
@@ -144,8 +153,13 @@ public static class StepExecutor
     {
         string fileName = args[StepArgs.ScreenshotFileName];
         string path = ctx.ResolveScreenshotPath(fileName);
+        // Hidden by default: a batch run forces DevMode, so every frame would otherwise carry the
+        // dev toolbar on top of the colonist bar, alerts, letters and bottom bar — noise in a
+        // single screenshot, and 24x the noise in a timelapse. Opt back in with hideUi=false when
+        // the UI itself is what's under test.
+        bool hideUi = ParseBool(args, StepArgs.ScreenshotHideUi, defaultValue: true);
         // Shared capture core — the same one the [DebugAction] dev-menu entry uses.
-        HarnessDebugActions.CaptureScreenshotTo(path);
+        HarnessDebugActions.CaptureScreenshotTo(path, hideUi);
         // CaptureScreenshot writes asynchronously over the next few frames — the driver waits
         // WaitFrames before the next command (or, for live mode, before returning the PNG).
         return new StepOutcome { ScreenshotPath = path, WaitFrames = 5 };
@@ -165,6 +179,24 @@ public static class StepExecutor
 
         return new StepOutcome();
     }
+
+    // Idles for a number of rendered frames. Exists so a scenario can let the game settle before
+    // the next step observes it: a clock jump doesn't necessarily update the glow grid and shadow
+    // direction in the same frame, and a screenshot taken too eagerly would capture stale lighting.
+    // Unlike FastForward this burns frames, not game ticks — the clock doesn't advance.
+    private static StepOutcome Wait(IReadOnlyDictionary<string, string> args)
+    {
+        int frames = int.Parse(args[StepArgs.WaitFrames]);
+        if (frames < 0)
+            return StepOutcome.Fail($"'{StepArgs.WaitFrames}' must not be negative (got {frames})");
+
+        return new StepOutcome { WaitFrames = frames };
+    }
+
+    // Absent means "use the caller's default" rather than "false", so adding an optional flag to a
+    // step never changes what existing scenario files do.
+    private static bool ParseBool(IReadOnlyDictionary<string, string> args, string key, bool defaultValue) =>
+        args.TryGetValue(key, out string? raw) ? bool.Parse(raw) : defaultValue;
 
     private static float LongitudeOf(Map map) => Find.WorldGrid.LongLatOf(map.Tile).x;
 

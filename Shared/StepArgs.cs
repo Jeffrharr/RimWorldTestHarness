@@ -25,8 +25,23 @@ public static class StepArgs
 
     public const string ScreenshotType = "Screenshot";
     public const string ScreenshotFileName = "fileName"; // written under the run's report folder
+    public const string ScreenshotHideUi = "hideUi";     // bool, default "true" — see StepExecutor
 
     public const string SetFeatureType = "SetFeature";
     public const string SetFeatureName = "featureName"; // must match a setter registered in FeatureRegistry
     public const string SetFeatureEnabled = "enabled";  // bool: "true"/"false"
+
+    public const string WaitType = "Wait";
+    public const string WaitFrames = "frames"; // int >= 0, rendered frames to idle before the next step
+
+    // Timelapse is the one composite step: it never reaches the executor, because
+    // TimelapseExpander desugars it at load time into a SetTime/Wait/Screenshot triple per frame.
+    // See TimelapseExpander for the range semantics and defaults.
+    public const string TimelapseType = "Timelapse";
+    public const string TimelapseFromHour = "fromHour";           // float, default 0
+    public const string TimelapseToHour = "toHour";               // float, default 24 (exclusive)
+    public const string TimelapseStepHours = "stepHours";         // float > 0, default 1
+    public const string TimelapseFileNamePrefix = "fileNamePrefix"; // default "timelapse"
+    public const string TimelapseSettleFrames = "settleFrames";   // int >= 0, default 2
+    public const string TimelapseFps = "fps";                     // int 1..60, default 12
 }

@@ -43,6 +43,10 @@ public static class ScenarioDriver
         _spec = spec;
         _reportPath = reportPath;
         _report = new ScenarioReport { ScenarioName = spec.Name };
+        // Anything the loader rejected while desugaring composite steps is carried into the report
+        // up front, so a scenario that lost a whole Timelapse sweep to a typo says so rather than
+        // quietly running a shorter scenario.
+        _report.Errors.AddRange(spec.LoadErrors);
         _state = State.WaitingForMap;
         _stepIndex = 0;
     }
@@ -158,6 +162,10 @@ public static class ScenarioDriver
         // Release the batch-only flags so nothing leaks past the run.
         HarnessRuntime.ForceDevMode = false;
         HarnessRuntime.ForcedLatitude = null;
+        // Screenshot steps hide the UI and deliberately don't restore it (the capture finishes over
+        // later frames), so the run's last screenshot leaves it hidden. Clearing it here keeps that
+        // contained to the run.
+        HarnessDebugActions.SetScreenshotMode(false);
         Application.Quit();
     }
 }

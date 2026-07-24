@@ -1,0 +1,9 @@
+{
+  "name": "daycycle_timelapse",
+  "saveFile": "minimal_colony.rws",
+  "steps": [
+    { "type": "SetTile", "args": { "latitude": "55" } },
+    { "type": "SetSeason", "args": { "dayOfYear": "15" } },
+    { "type": "Timelapse", "args": { "fromHour": "0", "toHour": "24", "stepHours": "0.5", "fileNamePrefix": "daycycle", "fps": "12" } }
+  ]
+}

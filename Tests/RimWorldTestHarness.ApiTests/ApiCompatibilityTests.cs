@@ -369,6 +369,57 @@ public class ApiCompatibilityTests
             "Verse.Map.Parent no longer exists — the catalog's map name comes from map.Parent.LabelCap");
     }
 
+    // --- Screenshot mode (HarnessDebugActions.SetScreenshotMode) ---
+    //
+    // Worth pinning even though it's "only cosmetic": if screenshotMode silently stopped existing
+    // or stopped being settable, every harness screenshot and every timelapse frame would quietly
+    // come back with the dev toolbar and HUD painted over the map. Nothing would fail — the gate is
+    // numeric — so the visual channel would rot without anyone noticing.
+
+    [Test]
+    public void UIRoot_ScreenshotModeField_Exists()
+    {
+        var type = GetType(_game, "Verse.UIRoot");
+        Assert.That(type, Is.Not.Null);
+        var field = type!.Fields.SingleOrDefault(f => f.Name == "screenshotMode");
+        Assert.That(field, Is.Not.Null,
+            "Verse.UIRoot.screenshotMode no longer exists — harness screenshots would include the full UI");
+        Assert.That(field!.FieldType.FullName, Is.EqualTo("Verse.ScreenshotModeHandler"),
+            "UIRoot.screenshotMode changed type — HarnessDebugActions.SetScreenshotMode would stop compiling");
+    }
+
+    [Test]
+    public void ScreenshotModeHandler_Active_SetterExists()
+    {
+        var type = GetType(_game, "Verse.ScreenshotModeHandler");
+        Assert.That(type, Is.Not.Null);
+        var setter = type!.Properties.SingleOrDefault(p => p.Name == "Active")?.SetMethod;
+        Assert.That(setter, Is.Not.Null,
+            "ScreenshotModeHandler.Active setter no longer exists — the harness can't hide the UI for captures");
+    }
+
+    // The suppression itself is driven by FiltersCurrentEvent, which is what the vanilla UI roots
+    // consult before drawing the dev toolbar, main buttons, alerts and colonist bar. If this went
+    // away, setting Active would still compile and would silently do nothing.
+    [Test]
+    public void ScreenshotModeHandler_FiltersCurrentEvent_GetterExists()
+    {
+        var type = GetType(_game, "Verse.ScreenshotModeHandler");
+        Assert.That(type, Is.Not.Null);
+        var getter = type!.Properties.SingleOrDefault(p => p.Name == "FiltersCurrentEvent")?.GetMethod;
+        Assert.That(getter, Is.Not.Null,
+            "ScreenshotModeHandler.FiltersCurrentEvent no longer exists — screenshot mode would stop suppressing UI drawing");
+    }
+
+    [Test]
+    public void Find_UIRoot_GetterExists()
+    {
+        var type = GetType(_game, "Verse.Find");
+        Assert.That(type, Is.Not.Null);
+        var getter = type!.Properties.SingleOrDefault(p => p.Name == "UIRoot")?.GetMethod;
+        Assert.That(getter, Is.Not.Null, "Find.UIRoot getter no longer exists");
+    }
+
     // --- helpers ---
 
     private static TypeDefinition? GetType(ModuleDefinition module, string fullName) =>
