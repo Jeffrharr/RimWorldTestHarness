@@ -238,6 +238,16 @@ public class ApiCompatibilityTests
     }
 
     [Test]
+    public void TickManager_CurTimeSpeed_GetterExists()
+    {
+        var type = GetType(_game, "Verse.TickManager");
+        Assert.That(type, Is.Not.Null);
+        var getter = type!.Properties.SingleOrDefault(p => p.Name == "CurTimeSpeed")?.GetMethod;
+        Assert.That(getter, Is.Not.Null,
+            "TickManager.CurTimeSpeed getter no longer exists — LiveCommandDriver can't capture/restore the pre-FastForward speed or report it in the heartbeat");
+    }
+
+    [Test]
     public void TimeSpeed_SuperfastMemberExists()
     {
         var type = GetType(_game, "Verse.TimeSpeed");
@@ -258,6 +268,105 @@ public class ApiCompatibilityTests
             m.Parameters.Count == 1 &&
             m.Parameters[0].ParameterType.FullName == "System.String");
         Assert.That(method, Is.Not.Null, "ScreenCapture.CaptureScreenshot(string) no longer exists");
+    }
+
+    // --- Live companion channel: native dev-action registry + catalog sources ---
+    // These live in the LudeonTK namespace, which is where RimWorld moved its debug tooling after
+    // 1.4 — so a game update renaming/moving them is exactly the "silent override breakage" class the
+    // repo CLAUDE.md warns about. DevActionCatalog reflects over them and HarnessDebugActions applies
+    // the attribute; LiveCommandDriver reads the catalog-source members below.
+
+    [Test]
+    public void DebugActionAttribute_ExistsWithFieldsWeRead()
+    {
+        var type = GetType(_game, "LudeonTK.DebugActionAttribute");
+        Assert.That(type, Is.Not.Null, "LudeonTK.DebugActionAttribute no longer exists — DevActionCatalog can't discover native dev-actions and HarnessDebugActions can't register the screenshot dev-action");
+        Assert.Multiple(() =>
+        {
+            foreach (var field in new[] { "name", "category", "actionType", "allowedGameStates" })
+                Assert.That(type!.Fields.SingleOrDefault(f => f.Name == field), Is.Not.Null,
+                    $"DebugActionAttribute.{field} no longer exists — DevActionCatalog reads it when building the catalog");
+            Assert.That(type!.Properties.SingleOrDefault(p => p.Name == "IsAllowedInCurrentGameState")?.GetMethod,
+                Is.Not.Null, "DebugActionAttribute.IsAllowedInCurrentGameState getter no longer exists — the catalog's Available flag depends on it");
+        });
+    }
+
+    [Test]
+    public void DebugActionType_EnumMembersExist()
+    {
+        var type = GetType(_game, "LudeonTK.DebugActionType");
+        Assert.That(type, Is.Not.Null, "LudeonTK.DebugActionType no longer exists");
+        Assert.Multiple(() =>
+        {
+            // Action is the only one we invoke; the tool-type members are enumerated (marked
+            // not-invokable) so the catalog still needs them to resolve.
+            foreach (var member in new[] { "Action", "ToolMap", "ToolMapForPawns", "ToolWorld" })
+                Assert.That(type!.Fields.SingleOrDefault(f => f.Name == member), Is.Not.Null,
+                    $"DebugActionType.{member} no longer exists");
+        });
+    }
+
+    [Test]
+    public void AllowedGameStates_PlayingOnMapExists()
+    {
+        var type = GetType(_game, "LudeonTK.AllowedGameStates");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(type!.Fields.SingleOrDefault(f => f.Name == "PlayingOnMap"), Is.Not.Null,
+            "AllowedGameStates.PlayingOnMap no longer exists — HarnessDebugActions' [DebugAction] gates on it");
+    }
+
+    [Test]
+    public void GenTypes_AllTypes_GetterExists()
+    {
+        var type = GetType(_game, "Verse.GenTypes");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(type!.Properties.SingleOrDefault(p => p.Name == "AllTypes")?.GetMethod, Is.Not.Null,
+            "Verse.GenTypes.AllTypes no longer exists — DevActionCatalog scans it to find [DebugAction] methods");
+    }
+
+    [Test]
+    public void GenFilePaths_ScreenshotFolderPath_GetterExists()
+    {
+        var type = GetType(_game, "Verse.GenFilePaths");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(type!.Properties.SingleOrDefault(p => p.Name == "ScreenshotFolderPath")?.GetMethod, Is.Not.Null,
+            "Verse.GenFilePaths.ScreenshotFolderPath no longer exists — the screenshot [DebugAction]'s default output path depends on it");
+    }
+
+    [Test]
+    public void LoadedModManager_RunningModsListForReading_GetterExists()
+    {
+        var type = GetType(_game, "Verse.LoadedModManager");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(type!.Properties.SingleOrDefault(p => p.Name == "RunningModsListForReading")?.GetMethod, Is.Not.Null,
+            "Verse.LoadedModManager.RunningModsListForReading no longer exists — the catalog's loaded-mods list depends on it");
+    }
+
+    [Test]
+    public void ModContentPack_PackageId_GetterExists()
+    {
+        var type = GetType(_game, "Verse.ModContentPack");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(type!.Properties.SingleOrDefault(p => p.Name == "PackageId")?.GetMethod, Is.Not.Null,
+            "Verse.ModContentPack.PackageId no longer exists — the catalog reports it per loaded mod");
+    }
+
+    [Test]
+    public void Map_uniqueID_FieldExists()
+    {
+        var type = GetType(_game, "Verse.Map");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(type!.Fields.SingleOrDefault(f => f.Name == "uniqueID"), Is.Not.Null,
+            "Verse.Map.uniqueID no longer exists — LiveCommandDriver uses it to detect a map change and re-emit the catalog");
+    }
+
+    [Test]
+    public void Map_Parent_GetterExists()
+    {
+        var type = GetType(_game, "Verse.Map");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(type!.Properties.SingleOrDefault(p => p.Name == "Parent")?.GetMethod, Is.Not.Null,
+            "Verse.Map.Parent no longer exists — the catalog's map name comes from map.Parent.LabelCap");
     }
 
     // --- helpers ---

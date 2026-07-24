@@ -68,6 +68,54 @@ tested, the live-game plumbing is validated by actually running it.
 - **`Fixtures/`** — save files scenarios load from. Not auto-creatable (no headless "new colony"
   API — see below); each one is made manually once. Gitignored.
 
+## Live companion channel (interactive mode)
+
+Alongside the batch mode above, the mod has a second, **interactive** mode: a companion channel that
+lets an external client (the sibling `RimWorldDevMCP` server, or its `rwdev` CLI) drive dev-actions
+against a game that's *already running* — set the time, read a probe, grab a screenshot — one command
+at a time, with results returned live. Batch answers "did this scenario pass?"; the companion answers
+"let me poke at whatever's on screen right now."
+
+- **Opt-in, not env-var-gated.** Batch keys off `RWTH_SCENARIO`, which a normally-launched game never
+  sets. The companion is instead armed by a mod-settings checkbox (`HarnessSettings` /
+  `HarnessMain`), so it works against a game started normally through Steam. Off by default; the mod
+  stays inert until it's ticked.
+- **Same tick pump, mutually exclusive.** `LiveCommandDriver.Tick()` is pumped from the same
+  `Patch_DriveScenario` postfix as `ScenarioDriver`. It bails immediately when a batch scenario is
+  `Active`, and no-ops (near-zero cost) when the setting is off — the two never run together.
+- **Minimally invasive.** Unlike batch, the companion runs against the user's real game, so it never
+  forces DevMode (`Patch_ForceDevMode` keys on `HarnessRuntime.ForceDevMode`, which only batch sets)
+  and never touches time speed except for an explicit `FastForward` (which restores the prior speed
+  when done). Read actions (probe/screenshot/status) are always safe mid-play.
+- **Shared executor.** Both drivers run the identical per-action game logic via `StepExecutor` (with
+  `HarnessRuntime` holding the flags the patches read), so batch and live can't drift. The batch
+  driver folds each `StepOutcome` into a `ScenarioReport`; the live driver folds it into a
+  `LiveResponse`.
+- **File-queue transport.** Every game-state mutation must happen on the main tick thread, so an
+  in-process HTTP listener would have to marshal onto the tick loop anyway. Instead the driver drains
+  a request/response file queue under `$XDG_CACHE_HOME/rimworld-dev-mcp/live` each frame, writing
+  atomically (tmp + `File.Replace`). The wire contract is `Shared/LiveProtocol.cs` — pure DTOs with
+  no transport assumptions, so a later HTTP transport reuses the exact same parsing. See
+  `RimWorldDevMCP/DESIGN.md` for the client half.
+
+### Actions live as real dev commands; the catalog is discovered, not hardcoded
+
+Which dev-actions and probes exist depends on the loaded modset, so the companion **discovers** them
+rather than shipping a static list. On map load it emits a `catalog.json` built from three sources:
+this harness's own verbs, the registered `ProbeRegistry`/`FeatureRegistry` entries, and — crucially —
+RimWorld's **own** dev-action registry. `DevActionCatalog` reflects over `Verse.GenTypes.AllTypes` for
+`[LudeonTK.DebugAction]`-attributed methods (the same set the game's dev menu shows), so the catalog
+mirrors the actual dev menu for whatever mods are loaded.
+
+New harness actions are added as real `[DebugAction]`s too, not bespoke code: `HarnessDebugActions`
+registers the screenshot action under a `RimWorldTestHarness` dev-menu category, sharing one capture
+core with the live channel. Honest limits: only zero-arg `DebugActionType.Action` entries are
+invokable headlessly — tool-type actions (which need a click target) are listed but not yet callable,
+and some `Action` entries open a UI dialog rather than doing something headless. The API-compat tests
+pin the `LudeonTK` dev-action surface (`DebugActionAttribute`/`DebugActionType`) and the catalog's
+data sources, since `LudeonTK` is where RimWorld relocated its debug tooling and is prone to the
+silent-breakage pitfall the parent `CLAUDE.md` calls out.
+
 ## Where probe tests live
 
 `Mod/Probes/IProbe.cs`/`ProbeRegistry.cs` is the *only* thing this repo owns for probes — the
