@@ -10,6 +10,15 @@ Status: all pieces are implemented and offline-tested (`Shared/`, `Mod/`, `Runne
 - [x] **Live end-to-end run** — `Runner/run_test.sh Scenarios/shadow_lean_equinox.json` passes
   against the fixture: exits 0, `shadow_lean: PASS` (actual `1.02e-06`, tol `0.02`), screenshot in
   `Runner/reports/`. Confirmed the mod-heavy fixture loads cleanly under the minimal ModsConfig.
+- [ ] **Verify timelapse settle frames against a real run** — `Timelapse` and UI-hiding are
+  implemented and offline-tested (`Scenarios/daycycle_timelapse.json` is the worked example), but
+  two things can only be confirmed with the game actually running: that `settleFrames: 2` is enough
+  for the glow grid and shadow direction to catch up after a clock jump (too few and frames record
+  stale lighting), and that `screenshotMode` blanks the HUD as expected in a captured frame. Raise
+  `settleFrames` if the sweep smears.
+- [ ] **Give the timelapse something to look at** — a full-day sweep over the current fixture's
+  flat sand will still show almost nothing, for the same reason the single `shadow_lean` screenshot
+  did. The scene-setup item below is what makes the video worth watching.
 
 ## Fixture ideas (future)
 

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace RimWorldTestHarness.Shared;
 
@@ -22,6 +23,14 @@ public sealed class ScenarioSpec
     public Dictionary<string, string> RequiredMods { get; set; } = new();
 
     public List<ScenarioStep> Steps { get; set; } = new();
+
+    // Problems the loader found while desugaring composite steps (see TimelapseExpander). Not part
+    // of the file format — it's loader output, hence JsonIgnore — but it has to travel with the
+    // spec so ScenarioDriver can fold it into the run's report. A scenario that silently dropped a
+    // malformed step would be worse than one that fails: the run would go green having verified
+    // less than it claimed.
+    [JsonIgnore]
+    public List<string> LoadErrors { get; set; } = new();
 }
 
 // Deliberately a flexible string/string arg bag rather than a typed union: RimWorld's own dev

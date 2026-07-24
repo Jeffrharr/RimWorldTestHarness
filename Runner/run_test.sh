@@ -65,14 +65,16 @@ fail() {
 # ---------------------------------------------------------------------------
 SCENARIO=""
 NO_TEARDOWN=0
+DELETE_FRAMES=0
 for arg in "$@"; do
     case "$arg" in
         --no-teardown) NO_TEARDOWN=1 ;;
+        --delete-frames) DELETE_FRAMES=1 ;;
         *) SCENARIO="$arg" ;;
     esac
 done
 if [[ -z "$SCENARIO" ]]; then
-    echo "[run_test] usage: run_test.sh <path/to/scenario.json> [--no-teardown]" >&2
+    echo "[run_test] usage: run_test.sh <path/to/scenario.json> [--no-teardown] [--delete-frames]" >&2
     exit 2
 fi
 [[ -f "$SCENARIO" ]] || fail "scenario file not found: $SCENARIO"
@@ -388,14 +390,81 @@ for check in report.get("ProbeChecks", []):
     print(f"[run_test]   {check.get('ProbeName')}: {status} "
           f"(actual={check.get('ActualValue')}, expected={check.get('ExpectedValue')}, "
           f"tolerance={check.get('Tolerance')})")
-for path in report.get("ScreenshotPaths", []):
-    print(f"[run_test]   screenshot: {path}")
+# A timelapse contributes one screenshot path per frame, so listing them all would bury the probe
+# results under dozens of near-identical lines. Long runs get summarised instead.
+shots = report.get("ScreenshotPaths", [])
+if len(shots) > 8:
+    print(f"[run_test]   screenshots: {len(shots)} files, {shots[0]} .. {shots[-1]}")
+else:
+    for path in shots:
+        print(f"[run_test]   screenshot: {path}")
 for err in report.get("Errors", []):
     print(f"[run_test]   ERROR: {err}")
 sys.exit(0 if report.get("Pass") else 1)
 PYEOF
 report_rc=$?
 set -e
+
+# ---------------------------------------------------------------------------
+# Step 8: stitch Timelapse frame sequences into videos
+# ---------------------------------------------------------------------------
+# A Timelapse step is desugared (Shared/TimelapseExpander.cs) into one SetTime/Wait/Screenshot
+# triple per frame, so by the time the run finishes the reports folder holds a numbered PNG
+# sequence and nothing else. Turning that into a video is a pure post-processing step, which is why
+# it lives out here rather than in the mod: no Unity encoder, no extra in-game dependency.
+#
+# Deliberately runs BEFORE the pass/fail gate below — a scenario whose probe failed is exactly when
+# you most want to watch what the lighting actually did.
+stitch_one_timelapse() {
+    local prefix="$1" fps="$2"
+    local pattern="$REPORTS_DIR/${prefix}_%04d.png"
+    local out="$REPORTS_DIR/${prefix}.mp4"
+    local count ff_err
+
+    count="$(find "$REPORTS_DIR" -maxdepth 1 -name "${prefix}_[0-9][0-9][0-9][0-9].png" | wc -l)"
+    if [[ "$count" -eq 0 ]]; then
+        log "Warning: scenario declares a '$prefix' timelapse but no frames were written."
+        return 0
+    fi
+
+    log "Stitching $count '$prefix' frame(s) at ${fps}fps -> $out"
+    # -y overwrites a previous run's video. yuv420p and the even-dimension scale filter keep the
+    # result playable in browsers and standard players, which reject odd widths or non-4:2:0 output.
+    if ff_err="$(ffmpeg -nostdin -loglevel error -y -framerate "$fps" -i "$pattern" \
+            -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -c:v libx264 -pix_fmt yuv420p "$out" 2>&1)"; then
+        log "Timelapse video: $out"
+        if [[ $DELETE_FRAMES -eq 1 ]]; then
+            find "$REPORTS_DIR" -maxdepth 1 -name "${prefix}_[0-9][0-9][0-9][0-9].png" -delete
+            log "Deleted $count source frame(s) (--delete-frames)."
+        fi
+    else
+        # Never fatal: the frames are the evidence, the video is a convenience. Losing the encode
+        # shouldn't turn a passing verification run into a failure.
+        log "Warning: ffmpeg failed for '$prefix' — frames kept in $REPORTS_DIR. ffmpeg said: $ff_err"
+    fi
+}
+
+stitch_timelapses() {
+    # Default fps here must match TimelapseExpander.DefaultFps; the expander validates the value,
+    # this only consumes it (fps affects playback rate, not what gets captured).
+    local declared
+    declared="$(jq -r '.steps[]? | select(.type == "Timelapse")
+                       | [(.args.fileNamePrefix // "timelapse"), (.args.fps // "12")] | @tsv' "$SCENARIO")"
+    [[ -z "$declared" ]] && return 0
+
+    if ! command -v ffmpeg >/dev/null; then
+        log "Warning: timelapse frames were captured but ffmpeg is not on PATH — skipping stitch."
+        log "         Frames remain in $REPORTS_DIR."
+        return 0
+    fi
+
+    log "--- Step 8: stitching timelapse(s) ---"
+    while IFS=$'\t' read -r prefix fps; do
+        [[ -n "$prefix" ]] && stitch_one_timelapse "$prefix" "$fps"
+    done <<< "$declared"
+}
+
+stitch_timelapses
 
 if [[ $report_rc -ne 0 ]]; then
     fail "scenario did not pass — see probe results above."

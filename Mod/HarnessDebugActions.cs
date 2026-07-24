@@ -16,12 +16,34 @@ public static class HarnessDebugActions
     // Shared capture core, used by the [DebugAction] below AND by the live channel's Screenshot
     // action (StepExecutor). Unity's ScreenCapture writes asynchronously over the next few frames;
     // a caller that needs the finished file (the live channel) waits for it to appear on disk.
-    public static void CaptureScreenshotTo(string absolutePath)
+    //
+    // hideUi drives vanilla's own screenshot mode, which suppresses the dev toolbar, colonist bar,
+    // main buttons, alerts, letters, tutor, messages and tooltips. It defaults to OFF so the two
+    // interactive callers are unaffected: the dev-menu action below behaves as it always has, and
+    // the live channel points at a real player's running game, where leaving the UI hidden would be
+    // a nasty surprise. Only the batch path opts in — and it never restores the flag here, because
+    // the capture completes over later frames; ScenarioDriver.Finish clears it at end of run. Any
+    // future caller that passes true owns restoring it.
+    public static void CaptureScreenshotTo(string absolutePath, bool hideUi = false)
     {
         string? dir = Path.GetDirectoryName(absolutePath);
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
+
+        // Safe to set in the same frame as the capture: Unity runs Update (where the driver pumps
+        // steps) before OnGUI and rendering, so the frame grabbed at end-of-frame is already clean.
+        if (hideUi)
+            SetScreenshotMode(true);
+
         ScreenCapture.CaptureScreenshot(absolutePath);
+    }
+
+    // Null-guarded because UIRoot only exists once a scene is up, and a caller that got here early
+    // should not eat a NullReferenceException over a cosmetic flag.
+    public static void SetScreenshotMode(bool active)
+    {
+        if (Find.UIRoot != null)
+            Find.UIRoot.screenshotMode.Active = active;
     }
 
     private static int _menuShotCounter;
