@@ -1078,6 +1078,73 @@ public class ApiCompatibilityTests
             "LogMessageType's members changed — Assert's warning/error filter would silently misclassify");
     }
 
+    // --- Animal spawning (Mod/SceneBuilder.cs's SpawnAnimals) ---
+    //
+    // The SpawnAnimal step generates a pawn rather than building a thing, so it leans on a different
+    // slice of vanilla than the rest of scene setup. If Ludeon moves any of it, these fail loudly at
+    // build time instead of the step silently spawning nothing and a screenshot showing empty ground.
+
+    // PawnGenerator.GeneratePawn(PawnKindDef, Faction, ...) — the convenience overload SpawnAnimals
+    // calls with a null faction to get an unaffiliated wild animal. Pinned by its first two parameter
+    // types; the trailing tile parameter is optional, so a four-or-more-arity overload still binds.
+    [Test]
+    public void PawnGenerator_GeneratePawn_KindFactionOverloadExists()
+    {
+        var type = GetType(_game, "Verse.PawnGenerator");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "GeneratePawn" &&
+            m.Parameters.Count >= 2 &&
+            m.Parameters[0].ParameterType.FullName == "Verse.PawnKindDef" &&
+            m.Parameters[1].ParameterType.FullName == "RimWorld.Faction");
+        Assert.That(method, Is.Not.Null,
+            "PawnGenerator.GeneratePawn(PawnKindDef, Faction, ...) no longer exists — SpawnAnimal can't generate a wild animal");
+        Assert.That(method!.ReturnType.FullName, Is.EqualTo("Verse.Pawn"),
+            "PawnGenerator.GeneratePawn no longer returns Pawn — SpawnAnimals' spawn call would stop compiling");
+    }
+
+    // PawnKindDef.RaceProps is how SpawnAnimals reaches the race's Animal flag to reject a non-animal
+    // kind. It delegates to the def's ThingDef.race, so both links matter.
+    [Test]
+    public void PawnKindDef_RaceProps_GetterExists()
+    {
+        var type = GetType(_game, "Verse.PawnKindDef");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(type!.Properties.SingleOrDefault(p => p.Name == "RaceProps")?.GetMethod, Is.Not.Null,
+            "PawnKindDef.RaceProps no longer exists — SpawnAnimal can't tell whether a kind is an animal");
+    }
+
+    // RaceProperties.Animal is the exact bool SpawnAnimals gates on. A rename would turn every kind
+    // into "not an animal" and the step would reject every spawn it is asked for.
+    [Test]
+    public void RaceProperties_Animal_GetterExists()
+    {
+        var type = GetType(_game, "Verse.RaceProperties");
+        Assert.That(type, Is.Not.Null);
+        var getter = type!.Properties.SingleOrDefault(p => p.Name == "Animal")?.GetMethod;
+        Assert.That(getter, Is.Not.Null,
+            "RaceProperties.Animal no longer exists — SpawnAnimal's animal-only guard can't be evaluated");
+        Assert.That(getter!.ReturnType.FullName, Is.EqualTo("System.Boolean"),
+            "RaceProperties.Animal is no longer a bool — SpawnAnimals' guard would stop binding");
+    }
+
+    // GenGrid.Standable(IntVec3, Map) is what SpawnAnimals uses instead of GenSpawn.CanSpawnAt (which
+    // takes a ThingDef, not a PawnKindDef) to tell a wall or deep-water cell from one an animal can
+    // stand in. Losing it would make every refused cell read as a silent success.
+    [Test]
+    public void GenGrid_Standable_MapOverloadExists()
+    {
+        var type = GetType(_game, "Verse.GenGrid");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "Standable" &&
+            m.Parameters.Count == 2 &&
+            m.Parameters[0].ParameterType.FullName == "Verse.IntVec3" &&
+            m.Parameters[1].ParameterType.FullName == "Verse.Map");
+        Assert.That(method, Is.Not.Null,
+            "GenGrid.Standable(IntVec3, Map) no longer exists — SpawnAnimals can't tell a standable cell from a wall");
+    }
+
     // --- helpers ---
 
     private static TypeDefinition? GetType(ModuleDefinition module, string fullName) =>
