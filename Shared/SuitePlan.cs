@@ -157,7 +157,7 @@ public static class SuitePlanner
         if (action == IsolationAction.ReloadSave)
             return ScenarioResidue.None;
         if (action == IsolationAction.SoftReset)
-            return pending & ~ScenarioResidueAnalyzer.SoftResettable;
+            return pending & ScenarioResidueAnalyzer.RequiresReload;
 
         return pending;
     }

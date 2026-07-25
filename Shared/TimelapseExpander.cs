@@ -52,36 +52,11 @@ public static class TimelapseExpander
         StepArgs.TimelapseFps,
     };
 
-    // Expands every Timelapse step in a scenario, passing all other steps through untouched. A
-    // Timelapse whose args don't validate is left in place and its reason appended to errors — the
-    // driver surfaces those in the run's report, and StepExecutor fails the leftover step rather
-    // than silently skipping it. Failing loudly beats a run that quietly produces no frames.
-    public static List<ScenarioStep> ExpandAll(IEnumerable<ScenarioStep> steps, List<string> errors)
-    {
-        List<ScenarioStep> expanded = new List<ScenarioStep>();
-        foreach (ScenarioStep step in steps)
-            ExpandInto(step, expanded, errors);
-        return expanded;
-    }
-
-    private static void ExpandInto(ScenarioStep step, List<ScenarioStep> into, List<string> errors)
-    {
-        if (step.Type != StepArgs.TimelapseType)
-        {
-            into.Add(step);
-            return;
-        }
-
-        if (!TryExpand(step.Args, out List<ScenarioStep> frames, out string? error))
-        {
-            errors.Add($"Timelapse step is invalid and was not expanded: {error}");
-            into.Add(step);
-            return;
-        }
-
-        into.AddRange(frames);
-    }
-
+    // Walking the step list and deciding what to do with a failed expansion now lives in
+    // Steps/StepExpansion.cs, which does it for any registered composite rather than for Timelapse
+    // specifically. What remains here is the Timelapse-specific arithmetic, reached through
+    // Steps/BuiltIn/TimelapseStep.cs.
+    //
     // The expansion proper. Returns false with a specific reason rather than throwing, so one bad
     // scenario yields a readable report entry instead of an exception during mod startup (which
     // would leave the runner waiting on a report file that never appears).

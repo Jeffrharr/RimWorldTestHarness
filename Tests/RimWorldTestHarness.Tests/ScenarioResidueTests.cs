@@ -1,3 +1,4 @@
+using System;
 using RimWorldTestHarness.Shared;
 
 namespace RimWorldTestHarness.Tests;
@@ -82,12 +83,22 @@ public class ScenarioResidueTests
     // Map is the one residue a soft reset cannot undo — that split IS the isolation policy, so it is
     // pinned rather than left implied by SuitePlanner's behaviour.
     [Test]
-    public void SoftResettable_ExcludesMapAndCoversEverythingElse()
+    // The two halves must partition ScenarioResidue.All exactly: every flag is either something
+    // WorldStateReset can put back or something only a reload can. A flag in neither would be
+    // silently ignored by the isolation planner, which is the one failure mode that makes a suite
+    // look isolated while it isn't.
+    public void SoftResettable_AndRequiresReload_PartitionAll()
     {
         Assert.Multiple(() =>
         {
-            Assert.That(ScenarioResidueAnalyzer.SoftResettable & ScenarioResidue.Map, Is.EqualTo(ScenarioResidue.None));
-            Assert.That(ScenarioResidueAnalyzer.SoftResettable | ScenarioResidue.Map, Is.EqualTo(ScenarioResidue.All));
+            Assert.That(ScenarioResidueAnalyzer.SoftResettable & ScenarioResidueAnalyzer.RequiresReload,
+                Is.EqualTo(ScenarioResidue.None), "a flag cannot be both soft-resettable and reload-only");
+            Assert.That(ScenarioResidueAnalyzer.SoftResettable | ScenarioResidueAnalyzer.RequiresReload,
+                Is.EqualTo(ScenarioResidue.All), "every flag must be classified");
+            // Named explicitly so adding a reload-only flag is a deliberate act with a test to update,
+            // not something that slips in unnoticed.
+            Assert.That(ScenarioResidueAnalyzer.RequiresReload,
+                Is.EqualTo(ScenarioResidue.Map | ScenarioResidue.GameConditions | ScenarioResidue.Weather));
         });
     }
 
@@ -99,7 +110,20 @@ public class ScenarioResidueTests
             Assert.That(ScenarioResidueAnalyzer.Describe(ScenarioResidue.None), Is.EqualTo("nothing"));
             Assert.That(ScenarioResidueAnalyzer.Describe(ScenarioResidue.Map | ScenarioResidue.Clock),
                 Is.EqualTo("map, clock"));
-            Assert.That(ScenarioResidueAnalyzer.Describe(ScenarioResidue.All), Does.Contain("screenshot mode"));
+
+            // Actually check every flag, rather than spot-checking one label as this used to. A flag
+            // added to the enum but not to Describe's list would otherwise slip through silently,
+            // and the symptom is a suite's isolation notes under-reporting what a scenario dirtied —
+            // exactly the kind of quiet shortfall the reporting rules here exist to prevent.
+            foreach (ScenarioResidue flag in Enum.GetValues(typeof(ScenarioResidue)))
+            {
+                bool isSingleFlag = flag != ScenarioResidue.None && flag != ScenarioResidue.All;
+                if (isSingleFlag)
+                {
+                    Assert.That(ScenarioResidueAnalyzer.Describe(flag), Is.Not.EqualTo("nothing"),
+                        $"{flag} has no label in Describe()");
+                }
+            }
         });
     }
 }

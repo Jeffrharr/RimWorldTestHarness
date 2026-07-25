@@ -1,4 +1,5 @@
 using RimWorldTestHarness.Shared;
+using RimWorldTestHarness.Shared.Steps;
 
 namespace RimWorldTestHarness.Tests;
 
@@ -19,7 +20,7 @@ public class TimelapseExpanderTests
     private static List<ScenarioStep> Expand(ScenarioStep step, out List<string> errors)
     {
         errors = new List<string>();
-        return TimelapseExpander.ExpandAll(new[] { step }, errors);
+        return StepExpansion.ExpandAll(new[] { step }, errors);
     }
 
     // --- happy path ---
@@ -95,7 +96,7 @@ public class TimelapseExpanderTests
         probe.Args[StepArgs.ProbeName] = "shadow_lean";
         var errors = new List<string>();
 
-        var steps = TimelapseExpander.ExpandAll(new[] { probe }, errors);
+        var steps = StepExpansion.ExpandAll(new[] { probe }, errors);
 
         Assert.That(errors, Is.Empty);
         Assert.That(steps, Has.Count.EqualTo(1));

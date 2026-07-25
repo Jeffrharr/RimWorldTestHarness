@@ -955,6 +955,88 @@ public class ApiCompatibilityTests
         });
     }
 
+    // --- Weather (SetWeather step) ---
+
+    [Test]
+    public void Map_WeatherManager_FieldExists()
+    {
+        var type = GetType(_game, "Verse.Map");
+        Assert.That(type, Is.Not.Null);
+        var field = type!.Fields.SingleOrDefault(f => f.Name == "weatherManager");
+        Assert.That(field, Is.Not.Null, "Map.weatherManager no longer exists — SetWeather can't reach the weather");
+    }
+
+    [Test]
+    public void WeatherManager_TransitionTo_SignatureExists()
+    {
+        var type = GetType(_game, "RimWorld.WeatherManager");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "TransitionTo" &&
+            m.Parameters.Count == 1 &&
+            m.Parameters[0].ParameterType.FullName == "Verse.WeatherDef");
+        Assert.That(method, Is.Not.Null, "WeatherManager.TransitionTo(WeatherDef) no longer exists");
+    }
+
+    [Test]
+    public void WeatherManager_CurWeatherAge_FieldExists()
+    {
+        var type = GetType(_game, "RimWorld.WeatherManager");
+        Assert.That(type, Is.Not.Null);
+        var field = type!.Fields.SingleOrDefault(f => f.Name == "curWeatherAge");
+        Assert.That(field, Is.Not.Null,
+            "WeatherManager.curWeatherAge no longer exists — SetWeather can't skip the blend, so a " +
+            "screenshot right after it would catch a half-mixed sky");
+    }
+
+    [Test]
+    public void WeatherManager_TransitionTicks_StillMatchesHardcodedValue()
+    {
+        var type = GetType(_game, "RimWorld.WeatherManager");
+        Assert.That(type, Is.Not.Null);
+        var field = type!.Fields.SingleOrDefault(f => f.Name == "TransitionTicks");
+        Assert.That(field, Is.Not.Null, "WeatherManager.TransitionTicks no longer exists");
+        Assert.That(field!.Constant, Is.EqualTo(4000f),
+            "WeatherManager.TransitionTicks changed — SetWeather ages the transition to exactly this " +
+            "value to complete the blend, so a different one would leave a half-mixed sky");
+    }
+
+    // --- GameConditions (StartCondition step) ---
+    //
+    // These shipped with StartCondition but were never covered here, so a rename would have been
+    // caught only by a live run failing at the step.
+
+    [Test]
+    public void Map_GameConditionManager_FieldExists()
+    {
+        var type = GetType(_game, "Verse.Map");
+        Assert.That(type, Is.Not.Null);
+        var field = type!.Fields.SingleOrDefault(f => f.Name == "gameConditionManager");
+        Assert.That(field, Is.Not.Null, "Map.gameConditionManager no longer exists — StartCondition can't register a condition");
+    }
+
+    [Test]
+    public void GameConditionManager_RegisterCondition_SignatureExists()
+    {
+        var type = GetType(_game, "RimWorld.GameConditionManager");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "RegisterCondition" &&
+            m.Parameters.Count == 1 &&
+            m.Parameters[0].ParameterType.FullName == "RimWorld.GameCondition");
+        Assert.That(method, Is.Not.Null, "GameConditionManager.RegisterCondition(GameCondition) no longer exists");
+    }
+
+    [Test]
+    public void GameCondition_StartTick_FieldExists()
+    {
+        var type = GetType(_game, "RimWorld.GameCondition");
+        Assert.That(type, Is.Not.Null);
+        var field = type!.Fields.SingleOrDefault(f => f.Name == "startTick");
+        Assert.That(field, Is.Not.Null,
+            "GameCondition.startTick no longer exists — StartCondition's agedHours can't back-date a condition");
+    }
+
     // --- helpers ---
 
     private static TypeDefinition? GetType(ModuleDefinition module, string fullName) =>

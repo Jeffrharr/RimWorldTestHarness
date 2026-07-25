@@ -35,6 +35,10 @@ public static class HarnessMod
     {
         new Harmony("joof.rimworldtestharness").PatchAll();
 
+        // Before anything can load a scenario: the loader validates step types against the registry,
+        // so discovery has to have run or every step in every scenario reads as an unknown type.
+        Steps.StepDiscovery.RunOnce();
+
         // Unconditional marker (scenario or not): Runner/run_test.sh's crash-retry logic greps
         // Player.log for this to tell "died before our mod loaded — flaky early-startup crash,
         // retry" from "died after — real crash, surface it".

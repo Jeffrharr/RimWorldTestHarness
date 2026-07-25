@@ -133,6 +133,7 @@ this repo's `Scenarios/`.
 | `FastForward` | `ticks` | int. Advances the game clock by running ticks. |
 | `Wait` | `frames` | int ≥ 0. Idles for rendered frames — use it to let visuals settle. |
 | `StartCondition` | `conditionDef`, `durationHours`, `agedHours` | Starts a vanilla `GameConditionDef` (`SolarFlare`, `Eclipse`, …). `durationHours` defaults to 24; ≤ 0 means permanent. `agedHours` back-dates the start tick so the condition is "born aged" and any fade-in has already elapsed. |
+| `SetWeather` | `weatherDef`, `instant` | Transitions to a `WeatherDef` (`Rain`, `Clear`, `Fog`, …) — weather drives sky glow and shadow strength. `instant` defaults to true and completes the blend immediately; false leaves the natural transition. |
 
 **Verification**
 
@@ -189,6 +190,16 @@ clock is jumped and the render is allowed to settle, which is why `settleFrames`
 That's a numeric gate and a three-image A/B comparison from one boot.
 
 ---
+
+### Adding a step type
+
+Steps are a registered extension point: implement `IStepSpec` (pure — name, residue, validation) in
+`Shared/Steps/` and `IStepAction` (the live-game half) in `Mod/Steps/`, and both registries find them
+by reflection at startup. No switch, list, or registration call needs editing, including from a
+third-party mod's own assembly. `SetWeather` is the worked example, in two small files.
+
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the walkthrough and `DESIGN.md`'s "Step registration"
+for why the definition is split across two assemblies.
 
 ## Making your mod testable
 
@@ -407,8 +418,8 @@ A run mutates global machine state, so it defends itself rather than trusting it
 
 | Path | What's in it |
 |---|---|
-| `Shared/` | Pure spec/report/planner logic (`netstandard2.0`, no game dependency). Fully unit-tested offline. |
-| `Mod/` | The in-game driver (`net481`, Harmony): bootstrap, `ScenarioDriver` state machine, `StepExecutor`, `SceneBuilder`, `LiveCommandDriver`, patches, `Probes/`, `Features/`. |
+| `Shared/` | Pure spec/report/planner logic (`netstandard2.0`, no game dependency). Fully unit-tested offline. `Steps/` holds each step's game-free half. |
+| `Mod/` | The in-game driver (`net481`, Harmony): bootstrap, `ScenarioDriver` state machine, `StepExecutor`, `SceneBuilder`, `LiveCommandDriver`, patches, `Probes/`, `Features/`, and `Steps/` for each step's live-game half. |
 | `Runner/` | `run_test.sh` (launch/wait/gate) and `fetch_mods.sh` (Workshop dependency download). |
 | `Scenarios/` | Modset-agnostic example scenarios and a suite list. |
 | `Fixtures/` | Save files scenarios load from. Gitignored; created manually. |

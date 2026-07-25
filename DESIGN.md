@@ -133,6 +133,67 @@ pin the `LudeonTK` dev-action surface (`DebugActionAttribute`/`DebugActionType`)
 data sources, since `LudeonTK` is where RimWorld relocated its debug tooling and is prone to the
 silent-breakage pitfall the parent `CLAUDE.md` calls out.
 
+## Step registration
+
+Steps are a registered extension point, not a hardcoded switch. A step declares itself in two files
+and both registries find it by reflection over loaded mod assemblies at startup — so a contributor
+(or a mod under test) adds a step without editing anything of ours. See CONTRIBUTING.md for the
+how-to; this is the why.
+
+Before this, a new step had to be threaded through five to eight central files: `StepArgs`,
+`StepValidator`'s `KnownStepTypes`, `ScenarioResidueAnalyzer`'s switch, `StepExecutor`'s `Dispatch`,
+`LiveCommandDriver`'s `HarnessVerbs`, sometimes `WorldStateReset`, plus tests and the README table.
+Every contributor's PR edited the same lines as every other's, and forgetting one file failed in a
+different way each time. `StartCondition` proved the hazard: it shipped (fd40268) without a case in
+the residue switch, silently fell to the `default: ScenarioResidue.All` arm, and reported that it had
+dirtied the clock, latitude, camera and map — none of which it touches. Safe, because `All` still
+forced a reload, but wrong in a way nothing would ever have surfaced.
+
+### Why the definition is split across two assemblies
+
+A step has a pure half and an impure one, and `Shared/` exists precisely to hold the pure half
+without a game:
+
+- `IStepSpec` (Shared) — type name, residue, live-callability, offline arg validation. Consumed by
+  `ScenarioSpecLoader`, `StepValidator`, `ScenarioResidueAnalyzer` and `SuitePlanner`.
+- `IStepAction` (Mod) — `Execute` against a live `Map`.
+
+Merging them would drag `Verse` into the assembly whose whole purpose is not needing it, and the
+suite-isolation decision would then only be checkable by booting RimWorld — the exact cost this repo
+exists to cut. The price is that half of a step can go missing, so `StepDiscovery.VerifyHalvesMatch`
+checks the pairing at startup and logs which half is absent, because "validates but won't execute" is
+otherwise painful to diagnose from a report.
+
+Composites are the one legitimate spec-without-action: a step that also implements `IStepExpander`
+desugars at load and never reaches the executor. `Timelapse` is the built-in case.
+
+### Why reflection rather than a Register() call
+
+An explicit registration list is just a central file with extra steps — something to edit and
+something to forget. Reflection over `LoadedModManager.RunningMods` means a step works by existing.
+There is precedent: `DevActionCatalog` already reflects over `GenTypes.AllTypes` for RimWorld's own
+`[DebugAction]` methods, and the standing TODOs on `ProbeRegistry`/`FeatureRegistry` ask for the same
+treatment.
+
+Shared's registry additionally self-discovers its own assembly from a static constructor, so offline
+consumers — unit tests, any future spec-linting mode — get the built-in vocabulary with no game and
+no bootstrap. Without that, every step in every scenario would read as an unknown type under test.
+
+### What stayed closed, and why
+
+`ScenarioResidue` is still a closed enum. A step picks from the existing flags, and adding a genuinely
+new kind of world state means adding a flag — the one place a contributor touches shared code. That
+is deliberate: the suite planner has to *understand* a residue kind to decide whether `WorldStateReset`
+can undo it or the save must be reloaded. A free-form residue string would let a typo read as "leaves
+nothing behind", and under-reported residue is the single failure mode that silently lets one scenario
+contaminate the next. `SoftResettable`/`RequiresReload` are derived from each other rather than listed
+twice, and a test names the reload-only flags explicitly so adding one is never accidental.
+
+Live-callability moved from a hand-kept `HashSet` to a per-step declaration defaulting to false. The
+exclusions were always safety decisions rather than gaps — the companion channel points at a real
+player's colony, and `PlaceThings` spawns with `WipeMode.Vanish` — and a default of "no" means a new
+step cannot become live-callable by being added to one list and forgotten in another.
+
 ## Where probe tests live
 
 `Mod/Probes/IProbe.cs`/`ProbeRegistry.cs` is the *only* thing this repo owns for probes — the

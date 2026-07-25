@@ -4,6 +4,7 @@ using System.IO;
 using RimWorld;
 using RimWorldTestHarness.Mod.Features;
 using RimWorldTestHarness.Mod.Probes;
+using RimWorldTestHarness.Shared.Steps;
 using RimWorldTestHarness.Shared;
 using UnityEngine;
 using Verse;
@@ -30,19 +31,22 @@ public static class LiveCommandDriver
     private const int HeartbeatIntervalFrames = 60; // ~1s at 60fps
     private const int ScreenshotWaitBudgetFrames = 120; // give a screenshot up to ~2s to hit disk
 
-    // Wait and Timelapse are absent because they're batch-sequencing concepts, not interactive ones.
-    // The scene-setup verbs (PlaceThings, SetTerrain, LookAt) are absent for a different and more
-    // important reason: they mutate the colony, and PlaceThings spawns with WipeMode.Vanish, which
-    // destroys whatever occupies the footprint. This channel points at a real player's running game
-    // and promises to stay minimally invasive (see the header above) — silently wiping part of
-    // someone's base over a file-drop channel would break that. Scenario runs are where those verbs
-    // belong: they load a throwaway fixture and never save it.
-    private static readonly HashSet<string> HarnessVerbs = new()
-    {
-        StepArgs.SetTileType, StepArgs.SetSeasonType, StepArgs.SetTimeType,
-        StepArgs.FastForwardType, StepArgs.ProbeType, StepArgs.ScreenshotType,
-        StepArgs.SetFeatureType,
-    };
+    // Which verbs this channel will run is now declared by each step itself (IStepSpec.LiveCallable)
+    // rather than listed here, so a step cannot become live-callable by being added to one list and
+    // forgotten in another. The default for anything new is NOT callable.
+    //
+    // The exclusions are unchanged and worth restating, because they are safety decisions rather
+    // than gaps. Wait and Timelapse are batch-sequencing concepts with nothing to sequence here. The
+    // scene-setup verbs (PlaceThings, SetTerrain, LookAt) and StartCondition mutate the colony —
+    // PlaceThings spawns with WipeMode.Vanish, which destroys whatever occupies the footprint. This
+    // channel points at a real player's running game and promises to stay minimally invasive (see
+    // the header above); silently wiping part of someone's base over a file-drop channel would break
+    // that. Scenario runs are where those verbs belong: they load a throwaway fixture and never save
+    // it.
+    private static HashSet<string> HarnessVerbs =>
+        _harnessVerbs ??= new HashSet<string>(StepRegistry.LiveCallableTypes, StringComparer.Ordinal);
+
+    private static HashSet<string>? _harnessVerbs;
 
     private static string? _sessionDir;
     private static bool _dirsReady;

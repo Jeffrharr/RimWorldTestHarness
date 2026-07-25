@@ -43,7 +43,22 @@ public enum ScenarioResidue
     // Map geometry/terrain/fog changed. The one residue a soft reset cannot undo.
     Map = 1 << 6,
 
-    All = Clock | Latitude | FeatureFlags | TimeSpeed | Camera | ScreenshotMode | Map,
+    // A GameCondition (solar flare, eclipse, ...) was registered on the map by StartCondition.
+    // Deliberately NOT in SoftResettable: WorldStateReset can put back a handful of values, but it
+    // cannot un-register a condition, and a condition still running into the next scenario would
+    // silently colour its screenshots. Listed apart from Map because it is world state, not
+    // geometry — a reader should not have to conclude that StartCondition moves walls.
+    GameConditions = 1 << 7,
+
+    // Map weather was changed by SetWeather. Like GameConditions, not soft-resettable: weather is
+    // map state WorldStateReset has no handle on, and rain persisting into the next scenario would
+    // silently darken its screenshots. Making it soft-resettable (capture the outgoing weather,
+    // transition back) is a reasonable follow-up; reload-required is the conservative starting
+    // point, because the failure mode of guessing wrong here is silent cross-contamination.
+    Weather = 1 << 8,
+
+    All = Clock | Latitude | FeatureFlags | TimeSpeed | Camera | ScreenshotMode | Map |
+          GameConditions | Weather,
 }
 
 // Pure classification of a step list's residue. Kept in Shared with no game types so the whole
@@ -56,6 +71,12 @@ public static class ScenarioResidueAnalyzer
         ScenarioResidue.Clock | ScenarioResidue.Latitude | ScenarioResidue.FeatureFlags |
         ScenarioResidue.TimeSpeed | ScenarioResidue.Camera | ScenarioResidue.ScreenshotMode;
 
+    // Residue only a save reload can undo. Derived from SoftResettable rather than listed separately
+    // so the two can never drift: a flag added to ScenarioResidue and forgotten in SoftResettable
+    // lands here automatically, which is the safe direction (an unnecessary reload is slow; a missed
+    // one silently lets one scenario contaminate the next).
+    public const ScenarioResidue RequiresReload = ScenarioResidue.All & ~SoftResettable;
+
     public static ScenarioResidue OfSteps(IReadOnlyList<ScenarioStep> steps)
     {
         ScenarioResidue residue = ScenarioResidue.None;
@@ -67,42 +88,20 @@ public static class ScenarioResidueAnalyzer
 
     public static ScenarioResidue OfScenario(ScenarioSpec scenario) => OfSteps(scenario.Steps);
 
+    // Each step declares its own residue on its registered spec, so this is a lookup rather than the
+    // switch it used to be. That switch was a file every new step had to be threaded through, and
+    // StartCondition proved the hazard: it shipped without a case here and silently fell to the
+    // `default` arm below, reporting that it had dirtied the clock, latitude, camera and map when it
+    // touches none of them.
     public static ScenarioResidue OfStep(string stepType)
     {
-        switch (stepType)
-        {
-            case StepArgs.SetTileType:
-                return ScenarioResidue.Latitude;
-            case StepArgs.SetSeasonType:
-            case StepArgs.SetTimeType:
-                return ScenarioResidue.Clock;
-            case StepArgs.FastForwardType:
-                return ScenarioResidue.Clock | ScenarioResidue.TimeSpeed;
-            case StepArgs.SetFeatureType:
-                return ScenarioResidue.FeatureFlags;
-            case StepArgs.LookAtType:
-                return ScenarioResidue.Camera;
-            case StepArgs.ScreenshotType:
-                return ScenarioResidue.ScreenshotMode;
-            case StepArgs.PlaceThingsType:
-            case StepArgs.SetTerrainType:
-                return ScenarioResidue.Map;
-            case StepArgs.TimelapseType:
-                // Normally desugared before this runs; one surviving here failed validation. Claim the
-                // residue its expansion would have had anyway, so a malformed Timelapse can't make a
-                // scenario look cleaner than the equivalent valid one.
-                return ScenarioResidue.Clock | ScenarioResidue.ScreenshotMode;
-            case StepArgs.ProbeType:
-            case StepArgs.WaitType:
-                // Read-only / idle: genuinely leave nothing behind.
-                return ScenarioResidue.None;
-            default:
-                // Assume the worst for a step type we don't recognise. An unknown type is already a
-                // load error so the suite will fail regardless, but a conservative answer here means a
-                // future step type added to StepExecutor and forgotten here degrades into "reload
-                // between everything" (slow but correct) instead of "share the world" (fast and wrong).
-                return ScenarioResidue.All;
-        }
+        // Assume the worst for a step type we don't recognise. An unknown type is already a load
+        // error so the suite will fail regardless, but a conservative answer here means a step whose
+        // spec failed to register degrades into "reload between everything" (slow but correct)
+        // rather than "share the world" (fast and wrong).
+        return Steps.StepRegistry.TryGet(stepType, out Steps.IStepSpec? spec) && spec != null
+            ? spec.Residue
+            : ScenarioResidue.All;
     }
 
     // Human-readable residue, for the plan lines written to Player.log and the suite report. A run
@@ -114,6 +113,8 @@ public static class ScenarioResidueAnalyzer
 
         List<string> parts = new List<string>();
         AddIfSet(parts, residue, ScenarioResidue.Map, "map");
+        AddIfSet(parts, residue, ScenarioResidue.GameConditions, "game conditions");
+        AddIfSet(parts, residue, ScenarioResidue.Weather, "weather");
         AddIfSet(parts, residue, ScenarioResidue.Clock, "clock");
         AddIfSet(parts, residue, ScenarioResidue.Latitude, "latitude");
         AddIfSet(parts, residue, ScenarioResidue.FeatureFlags, "feature flags");
