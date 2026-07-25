@@ -1,29 +1,53 @@
 #!/usr/bin/env bash
 # Runner/run_test.sh — Live RimWorld scenario runner.
 #
+# Runs ONE scenario or a SUITE of them. A RimWorld boot costs minutes and a step costs
+# milliseconds, so a suite runs every scenario inside a single game load, reloading the fixture
+# mid-session between the ones that mutated the map (see DESIGN.md, "Batching scenarios into one
+# load"). One scenario on the command line behaves exactly as it always has, report shape included.
+#
 # What this does:
 #   1. Symlinks RimWorldTestHarness, CelestialLighting, and CelestialLighting/TestMod into
 #      RimWorld's Mods folder if not already present (CelestialLighting is normally already
 #      symlinked as a real active mod — this script never removes a symlink it didn't create).
 #   2. Backs up the real ModsConfig.xml and any existing Saves/autostart.rws.
-#   3. Writes a minimal ModsConfig.xml: Core + installed DLCs + brrainz.harmony + the scenario's
-#      requiredMods + joof.celestiallighting + joof.rimworldtestharness +
-#      joof.celestiallighting.probes.
-#   4. Copies the scenario's Fixtures/<saveFile> to Saves/autostart.rws — RimWorld's own vanilla
+#   3. Writes a minimal ModsConfig.xml: Core + installed DLCs + brrainz.harmony + the union of
+#      every selected scenario's requiredMods + joof.celestiallighting +
+#      joof.rimworldtestharness + joof.celestiallighting.probes.
+#   4. Copies the scenarios' Fixtures/<saveFile> to Saves/autostart.rws — RimWorld's own vanilla
 #      autostart mechanism (Root_Entry.Start -> SaveGameFilesUtility.GetAutostartSaveFile, gated
 #      on Prefs.DevMode which Patch_ForceDevMode forces true while a scenario is active) loads it
 #      with no custom load-driving code needed. See DESIGN.md.
-#   5. Launches RimWorldLinux with RWTH_SCENARIO/RWTH_REPORT set, GPU-rendering (no
-#      -batchmode/-nographics — Screenshot steps need a real rendered frame), reusing
-#      MissileGirl/TestMods/run_test.sh's --no-sandbox + retry-on-early-crash shape.
+#   5. Launches RimWorldLinux with RWTH_SCENARIO (single) or RWTH_SUITE (suite) plus RWTH_REPORT,
+#      GPU-rendering (no -batchmode/-nographics — Screenshot steps need a real rendered frame),
+#      reusing MissileGirl/TestMods/run_test.sh's --no-sandbox + retry-on-early-crash shape.
 #   6. Waits for the report file to appear, gated on RimWorld staying alive and a timeout.
 #   7. Parses the JSON report, prints each probe's pass/fail and any screenshot paths, exits 0
-#      only if Pass == true.
-#   8. Restores ModsConfig.xml + Saves/autostart.rws from backup and removes any symlinks this
+#      only if Pass == true (for a suite: only if every scenario passed and there were no
+#      suite-level errors).
+#   8. Stitches any Timelapse frame sequences into videos.
+#   9. Restores ModsConfig.xml + Saves/autostart.rws from backup and removes any symlinks this
 #      run created (unless --no-teardown).
 #
 # Usage:
-#   ./run_test.sh <path/to/scenario.json> [--no-teardown] [--delete-frames] [--print-config]
+#   ./run_test.sh <scenario.json> [flags]                  # single scenario (unchanged behaviour)
+#   ./run_test.sh <a.json> <b.json> [<c.json> ...] [flags] # suite, one game load
+#   ./run_test.sh --suite <suite.txt> [flags]              # suite from a list file
+#   ./run_test.sh ../SomeMod/Tests/Scenarios/*.json        # the shell does the globbing
+#
+# Flags:
+#   --no-teardown          leave symlinks/ModsConfig/autostart.rws in place afterwards
+#   --delete-frames        delete timelapse PNGs once stitched
+#   --isolation=POLICY     auto (default) | always | never — how hard a suite works to isolate one
+#                          scenario from the next. See Shared/SuitePlan.cs.
+#   --print-config         print the resolved paths for this run and exit without touching anything
+#
+# A suite list file is one scenario path per line; '#' starts a whole-line comment, and relative
+# paths resolve against the list file's own directory (Shared/SuiteList.cs parses it).
+#
+# All scenarios in a suite must declare the same saveFile, because the save is chosen once at boot
+# and reloaded from mid-run — mixed fixtures are rejected rather than silently run against whichever
+# one came first.
 #
 # Notes:
 #   - This run only ever signals the RimWorldLinux process IT started, by PID (SIGTERM, escalating to
@@ -114,24 +138,82 @@ fail() {
 # ---------------------------------------------------------------------------
 # Args
 # ---------------------------------------------------------------------------
-SCENARIO=""
+SCENARIOS=()
+SUITE_LIST_IN=""
 NO_TEARDOWN=0
 DELETE_FRAMES=0
+ISOLATION="auto"
 PRINT_CONFIG=0
-for arg in "$@"; do
-    case "$arg" in
+
+abspath() { echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; }
+
+usage() {
+    echo "[run_test] usage: run_test.sh <scenario.json> [more.json ...] [--suite <list.txt>]" >&2
+    echo "[run_test]        [--no-teardown] [--delete-frames] [--isolation=auto|always|never]" >&2
+    echo "[run_test]        [--print-config]" >&2
+    exit 2
+}
+
+while (( $# )); do
+    case "$1" in
         --no-teardown) NO_TEARDOWN=1 ;;
         --delete-frames) DELETE_FRAMES=1 ;;
         --print-config) PRINT_CONFIG=1 ;;
-        *) SCENARIO="$arg" ;;
+        --isolation=*) ISOLATION="${1#--isolation=}" ;;
+        --isolation) shift; ISOLATION="${1:-}" ;;
+        --suite) shift; SUITE_LIST_IN="${1:-}" ;;
+        --suite=*) SUITE_LIST_IN="${1#--suite=}" ;;
+        -*) echo "[run_test] unknown flag: $1" >&2; usage ;;
+        *) SCENARIOS+=("$1") ;;
     esac
+    shift
 done
-if [[ -z "$SCENARIO" ]]; then
-    echo "[run_test] usage: run_test.sh <path/to/scenario.json> [--no-teardown] [--delete-frames] [--print-config]" >&2
-    exit 2
+
+case "$ISOLATION" in
+    auto|always|never) ;;
+    *) fail "--isolation must be auto, always or never (got '$ISOLATION')" ;;
+esac
+
+# A --suite list contributes its entries alongside any given on the command line, so the two ways of
+# selecting scenarios compose instead of one silently winning.
+#
+# Same grammar as Shared/SuiteList.cs (blank lines and whole-line '#' comments skipped, relative paths
+# resolved against the list file's directory) because this script re-emits the resolved set as the list
+# it actually hands the game — so a --suite file is read here and the harness only ever parses one
+# machine-generated list of absolute paths.
+suite_list_entry() {
+    local line="$1" trimmed
+    trimmed="$(printf '%s' "${line%%$'\r'}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    if [[ -n "$trimmed" && "$trimmed" != \#* ]]; then
+        [[ "$trimmed" == /* ]] || trimmed="$SUITE_LIST_DIR/$trimmed"
+        SCENARIOS+=("$trimmed")
+    fi
+}
+
+if [[ -n "$SUITE_LIST_IN" ]]; then
+    [[ -f "$SUITE_LIST_IN" ]] || fail "suite list not found: $SUITE_LIST_IN"
+    SUITE_LIST_DIR="$(cd "$(dirname "$SUITE_LIST_IN")" && pwd)"
+    while IFS= read -r line; do
+        suite_list_entry "$line"
+    done < "$SUITE_LIST_IN"
 fi
-[[ -f "$SCENARIO" ]] || fail "scenario file not found: $SCENARIO"
-SCENARIO="$(cd "$(dirname "$SCENARIO")" && pwd)/$(basename "$SCENARIO")"
+
+(( ${#SCENARIOS[@]} )) || usage
+
+# Resolve to absolute paths up front: the suite list handed to the game must not depend on this
+# script's cwd, and the report folder keeps a copy of it as a run artifact.
+for i in "${!SCENARIOS[@]}"; do
+    [[ -f "${SCENARIOS[$i]}" ]] || fail "scenario file not found: ${SCENARIOS[$i]}"
+    SCENARIOS[$i]="$(abspath "${SCENARIOS[$i]}")"
+done
+
+# Suite mode is anything other than exactly one scenario given positionally with no --suite. Keyed
+# off the invocation rather than the count so the single-scenario path — the fallback, and the one
+# whose report shape everything else already reads — stays byte-for-byte what it was.
+SUITE_MODE=1
+if (( ${#SCENARIOS[@]} == 1 )) && [[ -z "$SUITE_LIST_IN" ]]; then
+    SUITE_MODE=0
+fi
 
 # --print-config resolves every path this run would touch and exits without launching anything,
 # creating anything, or taking the lock. That makes the isolation properties checkable offline: run it
@@ -195,9 +277,28 @@ if pgrep -x RimWorldLinux >/dev/null 2>&1; then
     fail "a RimWorldLinux process is already running — close it first. This run will not kill it (it may be your game, or another agent's run)."
 fi
 
-SCENARIO_NAME="$(jq -r '.name' "$SCENARIO")"
-SAVE_FILE="$(jq -r '.saveFile' "$SCENARIO")"
-REQUIRED_MODS_JSON="$(jq -c '[.requiredMods // {} | keys[]]' "$SCENARIO")"
+# One save source per run: it is installed once at boot as autostart.rws, and the mid-suite reload
+# reloads that same file. Two scenarios naming different fixtures cannot both be honoured, so this
+# refuses rather than running the second against the first's colony.
+SAVE_FILE=""
+for scenario in "${SCENARIOS[@]}"; do
+    this_save="$(jq -r '.saveFile // ""' "$scenario")"
+    if [[ -z "$SAVE_FILE" ]]; then
+        SAVE_FILE="$this_save"
+    elif [[ "$this_save" != "$SAVE_FILE" ]]; then
+        fail "scenarios in one run must share a saveFile: '$SAVE_FILE' vs '$this_save' ($scenario). Split the run."
+    fi
+done
+
+# Union, so a suite boots with every mod any of its scenarios needs.
+REQUIRED_MODS_JSON="$(jq -s -c '[.[] | (.requiredMods // {}) | keys[]] | unique' "${SCENARIOS[@]}")"
+
+SCENARIO="${SCENARIOS[0]}"
+if (( SUITE_MODE )); then
+    RUN_LABEL="suite of ${#SCENARIOS[@]} ($(jq -r '.name' "${SCENARIOS[@]}" | tr '\n' ' ' | sed 's/ $//'))"
+else
+    RUN_LABEL="$(jq -r '.name' "$SCENARIO")"
+fi
 
 # Save source: prefer a manually-created fixture (deterministic, reproducible colony) if one
 # exists; otherwise fall back to RimWorld's own -quicktest, which generates a fresh vanilla
@@ -224,9 +325,33 @@ PROBES_DLL="$TESTMOD_DIR/1.6/Assemblies/CelestialLighting.Probes.dll"
 mkdir -p "$REPORTS_DIR"
 # 700: this dir holds a copy of the user's ModsConfig/Prefs and lives in a world-readable /tmp.
 mkdir -p -m 700 "$RUN_TMP_DIR"
-REPORT_PATH="$REPORTS_DIR/$(basename "$SCENARIO" .json)-$(date +%Y%m%d-%H%M%S).json"
 
-log "Scenario: $SCENARIO_NAME (save=$SAVE_FILE)"
+RUN_STAMP="$(date +%Y%m%d-%H%M%S)"
+if (( SUITE_MODE )); then
+    REPORT_PATH="$REPORTS_DIR/suite-$RUN_STAMP.json"
+    # The generated list lives beside the report as a run artifact: a suite whose membership can't be
+    # reconstructed afterwards is a suite whose green result means less than it looks like.
+    SUITE_LIST="$REPORTS_DIR/suite-$RUN_STAMP.txt"
+    printf '%s\n' "${SCENARIOS[@]}" > "$SUITE_LIST"
+else
+    REPORT_PATH="$REPORTS_DIR/$(basename "$SCENARIO" .json)-$RUN_STAMP.json"
+    SUITE_LIST=""
+fi
+
+# The save the driver reloads between scenarios that mutated the map. Set only in fixture mode —
+# -quicktest generates its colony at boot and writes no save, so there is nothing to reload, and
+# leaving this unset is what makes SuitePlanner refuse to pretend such a suite was isolated.
+if (( USE_QUICKTEST )); then
+    RELOAD_SAVE=""
+else
+    RELOAD_SAVE="autostart"
+fi
+
+log "Run: $RUN_LABEL (save=$SAVE_FILE)"
+if (( SUITE_MODE )); then
+    log "Suite mode: ${#SCENARIOS[@]} scenario(s) in one game load, isolation=$ISOLATION, reload save=${RELOAD_SAVE:-(none)}"
+    log "Suite list: $SUITE_LIST"
+fi
 log "Report will be written to: $REPORT_PATH"
 log "Run scratch dir: $RUN_TMP_DIR (backups, Player.log, stderr)"
 
@@ -524,7 +649,18 @@ launch_rimworld() {
         local savedata_arg=()
         [[ "$ISOLATE_SAVEDATA" == "1" ]] && savedata_arg=("-savedatafolder=$CONFIG_DIR")
 
-        RWTH_SCENARIO="$SCENARIO" RWTH_REPORT="$REPORT_PATH" \
+        # Exactly one of RWTH_SCENARIO / RWTH_SUITE is set. HarnessMod keys the report shape off which
+        # one it sees, so a single-scenario run keeps writing the bare ScenarioReport that Step 7 and
+        # every other consumer of Runner/reports/*.json already understand.
+        local harness_env=()
+        if (( SUITE_MODE )); then
+            harness_env=(RWTH_SUITE="$SUITE_LIST" RWTH_ISOLATION="$ISOLATION")
+            [[ -n "$RELOAD_SAVE" ]] && harness_env+=(RWTH_RELOAD_SAVE="$RELOAD_SAVE")
+        else
+            harness_env=(RWTH_SCENARIO="$SCENARIO")
+        fi
+
+        env "${harness_env[@]}" RWTH_REPORT="$REPORT_PATH" \
             "$RIMWORLD/RimWorldLinux" --no-sandbox \
             "${quicktest_arg[@]}" \
             "${savedata_arg[@]}" \
@@ -606,32 +742,61 @@ fi
 # ---------------------------------------------------------------------------
 # Step 7: parse and print the report
 # ---------------------------------------------------------------------------
-# ScenarioReport/ProbeCheckResult are serialized with System.Text.Json's default (PascalCase)
-# naming — Mod/ScenarioDriver.cs's Finish() calls JsonSerializer.Serialize with no naming policy —
-# so the keys below match the C# property names exactly, not camelCase.
+# ScenarioReport/ProbeCheckResult/SuiteReport are serialized with System.Text.Json's default
+# (PascalCase) naming — Shared/SuiteReport.cs's SuiteReportSerializer calls JsonSerializer.Serialize
+# with no naming policy — so the keys below match the C# property names exactly, not camelCase.
+#
+# Two shapes: a single-scenario run writes a bare ScenarioReport, a suite run writes a SuiteReport
+# wrapping one per scenario. Told apart by the "Scenarios" key rather than by what this script asked
+# for, so a report is readable on its own (e.g. re-inspected later) without knowing how it was made.
 log "--- Step 7: results ---"
 set +e
 python3 - "$REPORT_PATH" <<'PYEOF'
 import json, sys
 
 report = json.load(open(sys.argv[1]))
-print(f"[run_test] scenario: {report.get('ScenarioName')}  pass={report.get('Pass')}")
-for check in report.get("ProbeChecks", []):
-    status = "PASS" if check.get("Pass") else "FAIL"
-    print(f"[run_test]   {check.get('ProbeName')}: {status} "
-          f"(actual={check.get('ActualValue')}, expected={check.get('ExpectedValue')}, "
-          f"tolerance={check.get('Tolerance')})")
-# A timelapse contributes one screenshot path per frame, so listing them all would bury the probe
-# results under dozens of near-identical lines. Long runs get summarised instead.
-shots = report.get("ScreenshotPaths", [])
-if len(shots) > 8:
-    print(f"[run_test]   screenshots: {len(shots)} files, {shots[0]} .. {shots[-1]}")
-else:
-    for path in shots:
-        print(f"[run_test]   screenshot: {path}")
+
+
+def print_scenario(scenario, indent="  "):
+    print(f"[run_test]{indent}scenario: {scenario.get('ScenarioName')}  pass={scenario.get('Pass')}")
+    for check in scenario.get("ProbeChecks", []):
+        status = "PASS" if check.get("Pass") else "FAIL"
+        print(f"[run_test]{indent}  {check.get('ProbeName')}: {status} "
+              f"(actual={check.get('ActualValue')}, expected={check.get('ExpectedValue')}, "
+              f"tolerance={check.get('Tolerance')})")
+    # A timelapse contributes one screenshot path per frame, so listing them all would bury the probe
+    # results under dozens of near-identical lines. Long runs get summarised instead.
+    shots = scenario.get("ScreenshotPaths", [])
+    if len(shots) > 8:
+        print(f"[run_test]{indent}  screenshots: {len(shots)} files, {shots[0]} .. {shots[-1]}")
+    else:
+        for path in shots:
+            print(f"[run_test]{indent}  screenshot: {path}")
+    for err in scenario.get("Errors", []):
+        print(f"[run_test]{indent}  ERROR: {err}")
+
+
+if "Scenarios" not in report:
+    print_scenario(report, indent=" ")
+    sys.exit(0 if report.get("Pass") else 1)
+
+scenarios = report.get("Scenarios", [])
+print(f"[run_test] suite: {len(scenarios)} scenario(s)  pass={report.get('Pass')}")
+# Printed before the per-scenario detail: an isolation shortfall changes how every result below it
+# should be read.
+for note in report.get("IsolationNotes", []):
+    print(f"[run_test]   isolation: {note}")
+for scenario in scenarios:
+    print_scenario(scenario)
 for err in report.get("Errors", []):
-    print(f"[run_test]   ERROR: {err}")
-sys.exit(0 if report.get("Pass") else 1)
+    print(f"[run_test]   SUITE ERROR: {err}")
+
+failed = [s.get("ScenarioName") for s in scenarios if not s.get("Pass")]
+if failed:
+    print(f"[run_test] failed scenario(s): {', '.join(str(name) for name in failed)}")
+# An empty Scenarios list must NOT pass — the mod's own gate (ReportComparer.AllPass(SuiteReport))
+# already refuses it, and this mirrors that rather than trusting the flag alone.
+sys.exit(0 if report.get("Pass") and scenarios else 1)
 PYEOF
 report_rc=$?
 set -e
@@ -675,13 +840,46 @@ stitch_one_timelapse() {
     fi
 }
 
-stitch_timelapses() {
+# Bash mirror of Shared/SuiteScreenshots.PrefixFor + Qualify: in suite mode the mod prefixes every
+# screenshot name with its scenario, because two independently authored scenarios will happily both
+# ask for the same fileName and the second would silently overwrite the first. The rule is kept
+# trivial (sanitize to [A-Za-z0-9._-], join with "__") precisely so this mirror can't drift in
+# interesting ways; SuiteScreenshotsTests.QualifySpellingIsPinned locks the C# side. Change one, change
+# both — and note stitch_one_timelapse already warns loudly when a declared prefix matches no frames,
+# which is what a drift would look like.
+qualified_prefix() {
+    local scenario_name="$1" prefix="$2" sanitized
+    sanitized="$(printf '%s' "$scenario_name" | sed 's/[^A-Za-z0-9._-]/_/g')"
+    [[ -z "$sanitized" ]] && sanitized="scenario"
+    printf '%s__%s' "$sanitized" "$prefix"
+}
+
+stitch_scenario_timelapses() {
+    local scenario="$1" declared scenario_name prefix fps
     # Default fps here must match TimelapseExpander.DefaultFps; the expander validates the value,
     # this only consumes it (fps affects playback rate, not what gets captured).
-    local declared
     declared="$(jq -r '.steps[]? | select(.type == "Timelapse")
-                       | [(.args.fileNamePrefix // "timelapse"), (.args.fps // "12")] | @tsv' "$SCENARIO")"
+                       | [(.args.fileNamePrefix // "timelapse"), (.args.fps // "12")] | @tsv' "$scenario")"
     [[ -z "$declared" ]] && return 0
+
+    scenario_name="$(jq -r '.name' "$scenario")"
+    while IFS=$'\t' read -r prefix fps; do
+        if [[ -n "$prefix" ]]; then
+            if (( SUITE_MODE )); then
+                stitch_one_timelapse "$(qualified_prefix "$scenario_name" "$prefix")" "$fps"
+            else
+                stitch_one_timelapse "$prefix" "$fps"
+            fi
+        fi
+    done <<< "$declared"
+}
+
+stitch_timelapses() {
+    local any=0 scenario
+    for scenario in "${SCENARIOS[@]}"; do
+        jq -e '.steps[]? | select(.type == "Timelapse")' "$scenario" >/dev/null 2>&1 && any=1
+    done
+    (( any )) || return 0
 
     if ! command -v ffmpeg >/dev/null; then
         log "Warning: timelapse frames were captured but ffmpeg is not on PATH — skipping stitch."
@@ -690,15 +888,15 @@ stitch_timelapses() {
     fi
 
     log "--- Step 8: stitching timelapse(s) ---"
-    while IFS=$'\t' read -r prefix fps; do
-        [[ -n "$prefix" ]] && stitch_one_timelapse "$prefix" "$fps"
-    done <<< "$declared"
+    for scenario in "${SCENARIOS[@]}"; do
+        stitch_scenario_timelapses "$scenario"
+    done
 }
 
 stitch_timelapses
 
 if [[ $report_rc -ne 0 ]]; then
-    fail "scenario did not pass — see probe results above."
+    fail "run did not pass — see results above."
 fi
 
-log "SUCCESS: $SCENARIO_NAME passed. Report: $REPORT_PATH"
+log "SUCCESS: $RUN_LABEL passed. Report: $REPORT_PATH"

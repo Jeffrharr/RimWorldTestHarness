@@ -1,0 +1,13 @@
+# A suite list: every scenario named here runs inside ONE RimWorld load.
+#
+#   Runner/run_test.sh --suite Scenarios/demo_suite.txt
+#
+# Paths are relative to this file. Whole-line '#' comments and blank lines are ignored.
+# Shared/SuiteList.cs parses this; Runner/run_test.sh understands the same grammar.
+#
+# Every scenario in a suite must declare the same saveFile — the fixture is installed once at boot
+# and reloaded from mid-run. Order matters: shadow_casters_daycycle mutates the map (SetTerrain +
+# PlaceThings), so anything after it forces a mid-session reload to stay isolated. Putting the
+# read-only sweep first means this suite pays for exactly one reload rather than two.
+daycycle_timelapse.json
+shadow_casters_daycycle.json

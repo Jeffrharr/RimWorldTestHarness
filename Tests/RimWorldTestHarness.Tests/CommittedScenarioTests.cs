@@ -55,4 +55,42 @@ public class CommittedScenarioTests
 
         Assert.That(names, Is.Unique);
     }
+
+    // Committed screenshot names must not collide across the scenarios we ship, or a suite containing
+    // them would fail at plan time — better to learn that here than after a multi-minute boot.
+    [Test]
+    public void CommittedScenarios_HaveNoScreenshotNameCollisions()
+    {
+        var specs = ScenarioFiles().Select(ScenarioSpecLoader.LoadFromFile).ToList();
+
+        Assert.That(SuiteScreenshots.CollisionErrors(specs), Is.Empty);
+    }
+
+    private static IEnumerable<string> SuiteFiles() =>
+        Directory.EnumerateFiles(ScenariosDir(), "*.txt").OrderBy(p => p);
+
+    // The suite-list equivalent of the per-scenario test above: a committed suite whose entries moved
+    // or whose scenarios stopped agreeing on a fixture should fail offline, not at boot. Vacuously
+    // passes when no suite files are committed, which is fine — the point is that any we do ship stay
+    // runnable.
+    [TestCaseSource(nameof(SuiteFiles))]
+    public void CommittedSuite_LoadsAndPlansWithoutErrors(string path)
+    {
+        SuiteSpec suite = ScenarioSpecLoader.LoadSuiteFromFile(path);
+        // reloadAvailable: true because a committed suite is meant to be run against its fixture; the
+        // no-fixture (-quicktest) case is a property of how it's launched, not of the file.
+        SuitePlan plan = SuitePlanner.Plan(suite.Scenarios, IsolationPolicy.Auto, reloadAvailable: true);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(suite.LoadErrors, Is.Empty,
+                $"{Path.GetFileName(path)} produced load errors: {string.Join("; ", suite.LoadErrors)}");
+            Assert.That(plan.Errors, Is.Empty,
+                $"{Path.GetFileName(path)} does not plan cleanly: {string.Join("; ", plan.Errors)}");
+            // Runner/run_test.sh rejects a suite whose scenarios name different fixtures, since the save
+            // is installed once at boot. Caught here too, because that rejection costs a launch.
+            Assert.That(suite.Scenarios.Select(s => s.SaveFile).Distinct().Count(), Is.EqualTo(1),
+                $"{Path.GetFileName(path)} mixes saveFiles — run_test.sh will refuse it");
+        });
+    }
 }
