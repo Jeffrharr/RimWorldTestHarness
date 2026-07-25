@@ -38,4 +38,16 @@ public static class ReportComparer
     // prevent.
     public static bool AllPass(IReadOnlyList<ProbeCheckResult> checks, IReadOnlyList<string> errors) =>
         errors.Count == 0 && AllPass(checks);
+
+    // The same argument one level up, for a multi-scenario run. Three conditions, each guarding a
+    // distinct way a suite could look green while having verified less than it was asked to:
+    //
+    //   * no suite-level errors — an unparsable suite list, a screenshot name collision or a reload
+    //     that never completed each invalidate the run as a whole, not one scenario;
+    //   * at least one scenario — All() over an empty list is true, so an empty suite would otherwise
+    //     pass, exactly the vacuous-truth bug the two-arg overload above exists for;
+    //   * every scenario passed — including ones that never ran, which carry SuiteReportBuilder's
+    //     NotRunReason in their own Errors and so fail through the per-scenario gate.
+    public static bool AllPass(SuiteReport suite) =>
+        suite.Errors.Count == 0 && suite.Scenarios.Count > 0 && suite.Scenarios.All(s => s.Pass);
 }
