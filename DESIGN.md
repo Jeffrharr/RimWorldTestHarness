@@ -15,9 +15,13 @@ Two complementary verification modes, driven by one JSON `ScenarioSpec` format
 
 1. **Spec-driven pass/fail.** A scenario lists `Probe` steps: read some named numeric quantity
    (via `Mod/Probes/IProbe`) and compare it against an expected value within a tolerance
-   (`Shared/ReportComparer.cs`). A scenario passes only if every probe check passes
-   (`ReportComparer.AllPass`). This is the automatable gate — the piece that can run unattended
-   in a loop and produce a clean yes/no.
+   (`Shared/ReportComparer.cs`). A scenario passes only if every probe check passes **and the run
+   recorded no errors** (`ReportComparer.AllPass(checks, errors)`). Errors are part of the gate
+   because a probe-only gate is vacuous over an empty check list: a scenario with no `Probe` step —
+   a pure screenshot or timelapse run — would otherwise report `Pass` no matter how many of its
+   steps failed, and a step that silently didn't happen means the run verified less than it claims.
+   This is the automatable gate — the piece that can run unattended in a loop and produce a clean
+   yes/no.
 
 2. **Screenshot visual-confirm.** A scenario can also list `Screenshot` steps, which just capture
    an image to the report folder. These never affect pass/fail — they're for the cases a number
@@ -162,8 +166,29 @@ This is also *why* `ScenarioDriver` has to be a tick-driven state machine rather
 synchronously: `HarnessMod`'s `[StaticConstructorOnStartup]` fires before any scene exists, well
 before `Root_Entry.Start()` even runs its autostart check, let alone before a map is loaded. So
 `ScenarioDriver.Begin()` only sets `Active = true` and stashes the spec; actual step execution
-waits for `Patch_DriveScenario`'s postfix on `Root_Play.Update()` to observe `Find.CurrentMap !=
-null` before advancing past `State.WaitingForMap`.
+waits for `Patch_DriveScenario`'s postfix on `Root_Play.Update()` before advancing past
+`State.WaitingForMap`.
+
+### Readiness is `ProgramState.Playing`, not a non-null map
+
+The obvious gate — wait for `Find.CurrentMap != null` — is wrong, and wrong in a way that produces a
+*passing* run. `Game.InitNewGame` sets `ProgramState.MapInitializing`, generates the map (so
+`Find.CurrentMap` becomes non-null), and only afterwards calls `FinalizeInit`, which sets
+`ProgramState.Playing`. On the `-quicktest` path `Root_Play.Update` therefore pumps the driver during
+that window: steps ran against a half-built map and produced a storm of `ArgumentOutOfRangeException`
+out of `Verse.TickList.Tick`, the map never rendered, and the captured frame was menu art with the
+play HUD over it — yet the report said `Pass: true`, because RimWorld's own logged exceptions are not
+step failures.
+
+The autostart/fixture path never hit this, but only by luck: `Game.LoadGame` runs inside a
+`LongEvent`, so the pre-existing `LongEventHandler.ShouldWaitForEvent` guard happened to cover the
+same window. `ScenarioDriver.ReadyToRun` now waits for `ProgramState.Playing`, which both
+`InitNewGame` and `LoadGame` reach through `FinalizeInit`, plus a few settle frames. `LiveCommandDriver`
+carries the same check, since it can be pumped during a load too.
+
+The lesson generalises past this bug: "the run exited 0" is not evidence a scenario verified anything.
+That is why `Errors` count toward `Pass`, and why a scenario that produces images should always have
+its images looked at.
 
 ## Screenshot capture requires GPU rendering
 
@@ -222,6 +247,57 @@ dev-menu `[DebugAction]` behaves as it always has, and the live channel points a
 running game, where a hidden UI would be a nasty surprise. Only the batch path opts in, and it
 doesn't restore the flag inline (the capture finishes over later frames) — `ScenarioDriver.Finish`
 clears it at end of run.
+
+## Scene setup: spawned at runtime, not authored into the save
+
+`shadow_lean_equinox` exposed the limit of a purely numeric gate: the probe passed at `1.02e-06`
+against a `0.02` tolerance, and the screenshot beside it was useless, because the fixture's flat sand
+has almost nothing tall enough to cast a shadow. A day-cycle `Timelapse` over the same ground has the
+same problem, 48 times over. `PlaceThings` / `SetTerrain` / `LookAt` exist to fix that: a lattice of
+pillars on uniform ground, with the camera aimed at it, makes shadow direction and length legible at
+a glance.
+
+Save files are plain XML and a building really is a trivially authorable node (`<thing
+Class="Building">` with `def`, `id`, `pos`, `stuff`), so hand-authoring the scene into a fixture was
+the obvious alternative. Four things decided it the other way:
+
+- **Terrain isn't XML.** `<terrainGrid>` is a `<topGridDeflate>` base64 deflate blob keyed by def
+  shortHashes that vary with the loaded modset. At runtime it's one `TerrainGrid.SetTerrain` call.
+- **It wouldn't cover the no-fixture path.** `Runner/run_test.sh` falls back to `-quicktest` when the
+  scenario names no existing fixture, and a generated colony has no save file to edit.
+  `shadow_casters_daycycle` deliberately takes that path — it needs no fixture at all, because
+  `SetTile` forces latitude and the scene is built from scratch.
+- **It fails silently.** A `def` absent from the active modset makes RimWorld drop the node at load
+  with only a log warning. `SceneBuilder` instead counts what actually spawned and reports any
+  shortfall cell by cell. Note it has to ask `GenSpawn.CanSpawnAt` explicitly to do that: the `Thing`
+  overload of `GenSpawn.Spawn` — unlike the `ThingDef` one — never consults it, and returns null only
+  for a null map, an out-of-bounds cell or an already-spawned thing. Relying on that null alone would
+  have reported a wall standing in deep water as successfully placed.
+- **It's version-coupled with no compile signal.** Hand-authored XML breaks invisibly on a save-format
+  change; the vanilla API surface is pinned in `Tests/RimWorldTestHarness.ApiTests` instead.
+
+None of that rules the XML route out for the job it *is* right for — generating a reproducible
+committed fixture (see `TODO.md`). `SceneLayout` produces plain `(def, stuff, dx, dz, rot)` tuples, so
+a save-XML emitter can consume the same plan when that comes up.
+
+Coordinates in a plan are **anchor-relative offsets, never absolute cells**, and the anchor defaults
+to map centre. That's what keeps `SceneLayout` pure — resolving "center" needs a live `Map`, so
+`SceneBuilder` does it — and it's why one scenario works against both the committed 250×250 fixture
+and a `-quicktest` colony.
+
+Scene steps lift fog by default (`unfog`, opt out with `"false"`). RimWorld draws neither terrain nor
+things in fogged cells, and a freshly generated colony has only a small revealed pocket — so a scene
+built at map centre is *completely invisible* while every step still reports success. Fog is lifted
+across the whole map rather than the built footprint, because a shadow falls well outside the cells its
+caster occupies, and at a low sun it falls a long way. Nothing is ever saved, so there is no lasting
+effect on a colony.
+
+Two further consequences worth knowing. `PlaceThings` spawns with `WipeMode.Vanish`, which destroys whatever
+occupies the footprint; that's acceptable in a batch run (the fixture is restored by the runner and
+the game is never saved) and is exactly why these three verbs are kept off the live companion channel,
+which points at a real player's colony. And the default `grid` layout is separate pillars rather than
+a closed wall rectangle, both because each pillar throws its own readable shadow and because a
+rectangle would read as a room.
 
 ## API compatibility tests
 

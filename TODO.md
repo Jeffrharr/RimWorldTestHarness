@@ -16,9 +16,22 @@ Status: all pieces are implemented and offline-tested (`Shared/`, `Mod/`, `Runne
   after each clock jump, and `screenshotMode` cleanly blanked the HUD (no toolbar/alerts/date
   readout/colonist bar). Both mp4s stitched fine at 8fps. Raise `settleFrames` only if a future
   denser/faster sweep smears.
-- [ ] **Give the timelapse something to look at** — a full-day sweep over the current fixture's
-  flat sand will still show almost nothing, for the same reason the single `shadow_lean` screenshot
-  did. The scene-setup item below is what makes the video worth watching.
+- [x] **Give the timelapse something to look at** — done and confirmed live.
+  `Scenarios/shadow_casters_daycycle.json` paints a 40×40 concrete pad, drops a 4×4 granite pillar
+  grid on it, aims the camera at it and sweeps a full day at half-hour steps.
+  `Runner/run_test.sh Scenarios/shadow_casters_daycycle.json` exits 0, writes 48 frames and stitches
+  `casters.mp4`. Checked by eye: all 16 pillars present on the pad, and the shadows genuinely read —
+  at 09:00 (frame 0018) they're short and lean north-east, by 17:00 (frame 0034) they've swung west,
+  lengthened several-fold and the light has gone warm. No smearing at `settleFrames: 2`, and
+  `screenshotMode` blanked the HUD. This is the thing `shadow_lean_equinox`'s screenshot couldn't
+  show: the lean is now reviewable, not just numerically gated.
+
+- [ ] **Gate on RimWorld's own logged errors** — surfaced while debugging the quickstart blockers:
+  `ReportComparer.AllPass(checks, errors)` catches failing steps, but nothing catches the *game*
+  logging 12 root-level exceptions and rendering no map — that run still exited 0. Worth having
+  `ScenarioDriver` (or `run_test.sh`, which already has Player.log in hand) treat
+  `"Root level exception"` / `Log.Error` output during a scenario as a run failure, since that is
+  precisely the plausible-looking-but-wrong outcome the harness exists to catch.
 
 ## Fixture ideas (future)
 
@@ -26,7 +39,25 @@ The current fixture is whatever save happened to be newest — heavy, tied to th
 active mod list, and not something a fresh checkout can regenerate. Directions to make the
 fixture story self-serve instead of manual:
 
-- [ ] **Quickstart / no-fixture mode** (lightest — for when the colony doesn't matter) — for
+- [ ] **Quickstart / no-fixture mode** — the two blockers that made this unusable are **fixed and
+  confirmed live** (2026-07-24, four runs). What remains is tracked in
+  [#4](https://github.com/Jeffrharr/RimWorldTestHarness/issues/4): a generated colony often has rock in
+  the target area, so a run reports e.g. `placed 12 of 16 Wall — 4 refused`, and mountain cells carry
+  overhead roof that darkens exactly the ground a lighting scenario cares about. Scene setup needs to
+  clear things and roof from its footprint before this path can host a visual scenario.
+
+  What was fixed:
+  - `ScenarioDriver` waited only for `Find.CurrentMap != null`, which goes true partway through
+    `Game.InitNewGame` — so steps ran during `MapInitializing`, producing 12 ×
+    `ArgumentOutOfRangeException` from `Verse.TickList.Tick` and no rendered map, while the run still
+    reported `Pass: true`. Now gated on `ProgramState.Playing` (set by `Game.FinalizeInit`, which both
+    `InitNewGame` and `LoadGame` reach) plus settle frames. Verified: 0 exceptions, and no magic `Wait`
+    needed in the scenario. See `DESIGN.md`, "Readiness is `ProgramState.Playing`".
+  - Map centre on a fresh colony is fogged, and RimWorld draws neither terrain nor things in fogged
+    cells — so the scene built correctly and was invisible, with every step reporting success. Scene
+    steps now lift fog by default (`unfog`).
+
+  Original rationale, still valid (lightest — for when the colony doesn't matter): for
   lighting scenarios the specific colony is irrelevant: `Patch_ForcedLatitude` already overrides
   latitude and the `SetSeason`/`SetTime` steps drive the clock, so only the sky matters. Add a
   scenario flag (e.g. `"fixture": "quickstart"` or a top-level `"quickstart": true`) that skips
@@ -47,15 +78,33 @@ fixture story self-serve instead of manual:
 - [ ] **Ship a committed minimal fixture** — as a fallback, a genuinely small vanilla-only colony
   save checked into git (or generated once and committed) so runs don't depend on the user's
   Steam Workshop mod set.
-- [ ] **Scene setup: place objects/pawns on load** — a scenario step (or `FixtureSpec` field) to
-  spawn specified things at map load: e.g. a row of walls/pillars on flat ground as deliberate
-  shadow-casters, or pawns at known positions. The `shadow_lean_equinox` run showed the weakness —
-  the fixture's flat sand had almost nothing tall, so the shadow lean was hard to eyeball even
-  though the probe passed. Purpose-built casters would make lighting screenshots (shadow
-  direction, night darkness, moonlight tint, twilight hue) genuinely reviewable, not just
-  numerically gated. Pairs with quickstart mode (generate blank colony → place casters → assert).
+- [ ] **Scene setup: place pawns at known positions** — the things/terrain/camera half of scene setup
+  is done (see Done below), but pawns were deliberately left out: `PawnGenerator.GeneratePawn` drags in
+  faction resolution and Biotech xenotype args, a meaningfully larger surface than thing-spawning and
+  not needed for the shadow-caster case that motivated the work. A `PlacePawn` step would reuse
+  `SceneLayout`'s layout vocabulary (`grid`/`row`/`cells`, anchor, offset) completely unchanged — only
+  a new adapter path in `Mod/SceneBuilder.cs` and a new `Dispatch` case are actually missing. Worth
+  doing when a scenario needs pawns in frame (checking night-time pawn visibility, or that a lighting
+  change doesn't wash out skin tones).
 
 ## Done
+
+- [x] **Scene setup: things, terrain and camera** — three new steps, `PlaceThings` / `SetTerrain` /
+  `LookAt`. Layout arithmetic and arg validation are pure (`Shared/SceneLayout.cs`, offline-tested);
+  `Mod/SceneBuilder.cs` is the Verse-touching adapter and also exposes a "Place shadow-caster grid"
+  `[DebugAction]` over the same core. Layouts are `grid` (default, separate pillars so each throws its
+  own readable shadow), `row` and an explicit `cells` escape hatch; coordinates are anchor-relative
+  offsets defaulting to map centre, so a scenario is fixture-independent. Spawned at runtime rather
+  than authored into the save XML — see `DESIGN.md`'s "Scene setup" section for why, and note the XML
+  route is still the right tool for the fixture-generation ideas above.
+- [x] **Step errors count toward Pass** — `ReportComparer.AllPass(checks, errors)`, used by
+  `ScenarioDriver.Finish()`. Previously `Pass` looked only at probe checks, and `AllPass` over an empty
+  list is `true`, so a scenario with no `Probe` step reported `Pass: true` and the runner exited 0 even
+  if every step had errored. That mattered most for image-only runs: a failed `PlaceThings` would have
+  left a plausible-looking empty screenshot on a green run.
+- [x] **Load-time step validation** — `Shared/StepValidator.cs`, run at `ScenarioSpecLoader`'s existing
+  choke point. Dry-runs the (pure) scene planners and rejects unknown step types, which finally makes
+  true the claim `ScenarioSpec.cs` has always carried that the loader validates step types.
 
 - [x] **Save loading** — no custom loader needed. RimWorld's own `Root_Entry.Start()` autoloads a
   save named `autostart.rws` when `Prefs.DevMode` is true (`Patch_ForceDevMode.cs` forces that
