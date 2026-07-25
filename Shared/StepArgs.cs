@@ -91,16 +91,33 @@ public static class StepArgs
     public const string LookAtType = "LookAt";
     public const string LookAtZoom = "zoom"; // float > 0, CameraDriver root size; omit to keep current
 
-    // Spawns wild animals into the scene. Reuses the scene family's anchor/offset/unfog/clear keys
-    // because it answers "where on the map?" the same way; see AnimalLayout for the row grammar and
-    // SceneBuilder.SpawnAnimals for how a kind resolves and a pawn is generated. `clear` (default
-    // false) destroys destroyables and strips roof in each spawn cell first, so an animal can land
-    // where a wall or rock stood. Wild animals only for now — a non-animal kind is rejected rather
-    // than generated without faction/gear.
-    public const string SpawnAnimalType = "SpawnAnimal";
-    public const string SpawnAnimalKind = "kind";       // PawnKindDef defName; must be an animal (e.g. "Muffalo")
-    public const string SpawnAnimalCount = "count";     // int >= 1, default 1
-    public const string SpawnAnimalSpacing = "spacing"; // int >= 1, cells between animals in the row, default 2
+    // Spawns pawns into the scene — wild animals, player colonists, or hostile-faction raiders,
+    // decided by `faction`. Reuses the scene family's anchor/offset/unfog/clear keys because it
+    // answers "where on the map?" the same way; see PawnLayout for the row grammar and
+    // SceneBuilder.SpawnPawns for how a kind/faction resolves and a pawn is generated. `clear`
+    // (default false) destroys destroyables and strips roof in each spawn cell first, so a pawn can
+    // land where a wall or rock stood.
+    public const string SpawnPawnType = "SpawnPawn";
+    public const string SpawnPawnKind = "kind";         // PawnKindDef defName (e.g. "Muffalo", "Colonist", "Pirate")
+    public const string SpawnPawnCount = "count";       // int >= 1, default 1
+    public const string SpawnPawnSpacing = "spacing";   // int >= 1, cells between pawns in the row, default 2
+
+    // Which faction the spawned pawns belong to, which is what makes a humanlike a colonist or a
+    // raider rather than a neutral drifter: "wild" (default, no faction — animals, wild men),
+    // "player" (your colony), or "hostile" (a deterministic enemy faction of the player).
+    public const string SpawnPawnFaction = "faction";   // wild (default) | player | hostile
+
+    // Force the pawn's gender. Omit to let generation pick. "male" | "female".
+    public const string SpawnPawnGender = "gender";
+
+    // Health conditions to apply after generation, as a semicolon-separated list. Each entry is a
+    // HediffDef defName, optionally targeting a body part with "@BodyPartDef" and/or setting a
+    // severity with ":<float>":
+    //   "Flu:0.4; ToxicBuildup:0.7"          — whole-body conditions at a chosen severity
+    //   "MissingBodyPart@Leg; BionicArm@Arm" — targeted at the first matching body part
+    // Body parts are resolved against the kind's own body, so a typo or a part the race lacks fails
+    // the step before any pawn is spawned rather than logging mid-run.
+    public const string SpawnPawnHediffs = "hediffs";
 
     // Timelapse is the one composite step: it never reaches the executor, because
     // TimelapseExpander desugars it at load time into a SetTime/Wait/Screenshot triple per frame.

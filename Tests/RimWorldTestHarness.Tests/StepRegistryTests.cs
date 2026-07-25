@@ -24,7 +24,7 @@ public class StepRegistryTests
             StepArgs.FastForwardType, StepArgs.WaitType, StepArgs.ProbeType,
             StepArgs.ScreenshotType, StepArgs.SetFeatureType, StepArgs.StartConditionType,
             StepArgs.PlaceThingsType, StepArgs.SetTerrainType, StepArgs.LookAtType,
-            StepArgs.SpawnAnimalType, StepArgs.TimelapseType, "SetWeather", "Assert",
+            StepArgs.SpawnPawnType, StepArgs.TimelapseType, "SetWeather", "Assert",
         };
 
         Assert.That(StepRegistry.KnownTypes, Is.EquivalentTo(expected));
@@ -57,7 +57,7 @@ public class StepRegistryTests
     // the next scenario against a contaminated world while believing it was isolated.
     [TestCase(StepArgs.PlaceThingsType)]
     [TestCase(StepArgs.SetTerrainType)]
-    [TestCase(StepArgs.SpawnAnimalType)]
+    [TestCase(StepArgs.SpawnPawnType)]
     [TestCase(StepArgs.StartConditionType)]
     [TestCase("SetWeather")]
     public void MutatingSteps_RequireAReload(string stepType)

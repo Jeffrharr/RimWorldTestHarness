@@ -414,7 +414,7 @@ public static class SceneLayout
     // "center" (the default) or an explicit "x,z". Defaulting to centre is what makes a scenario
     // fixture-independent: it needs no knowledge of where the save's colony happens to sit.
     //
-    // internal, not private: AnimalLayout reuses this exact anchor grammar so SpawnAnimal and
+    // internal, not private: PawnLayout reuses this exact anchor grammar so SpawnPawn and
     // PlaceThings can't drift on what "center"/"offset" mean.
     internal static bool ReadAnchor(
         IReadOnlyDictionary<string, string> args, IAnchoredPlan plan, out string? error)
@@ -452,7 +452,7 @@ public static class SceneLayout
         return true;
     }
 
-    // internal, not private: AnimalLayout reuses this for its count/spacing args so the "must be at
+    // internal, not private: PawnLayout reuses this for its count/spacing args so the "must be at
     // least 1" rule and its error shape stay identical across the two planners.
     internal static bool ReadPositive(
         IReadOnlyDictionary<string, string> args, string key, int fallback,

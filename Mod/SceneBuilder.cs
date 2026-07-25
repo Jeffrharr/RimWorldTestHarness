@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using LudeonTK;
 using RimWorld;
 using RimWorldTestHarness.Shared;
@@ -403,16 +404,24 @@ public static class SceneBuilder
         return null;
     }
 
-    // ----- SpawnAnimal ------------------------------------------------------------------------
+    // ----- SpawnPawn --------------------------------------------------------------------------
 
-    // Generates wild animals and spawns them on the plan's cells, returning an error describing any
-    // shortfall. Counting what actually landed is the same discipline as PlaceThings: an animal asked
-    // for on a wall cell would otherwise be silently absent, and a screenshot of a "successful" spawn
-    // would show empty ground.
-    public static string? SpawnAnimals(Map map, AnimalPlan plan)
+    // Generates pawns (wild animals, colonists, or hostile raiders, per plan.Faction) and spawns them
+    // on the plan's cells, returning an error describing any shortfall. Counting what actually landed
+    // is the same discipline as PlaceThings: a pawn asked for on a wall cell would otherwise be
+    // silently absent, and a screenshot of a "successful" spawn would show empty ground.
+    //
+    // Kind, faction and hediff defs are all resolved UP FRONT, before any pawn is generated, so a
+    // typo'd kind, an unknown hediff or a body part the race lacks fails the whole step cleanly rather
+    // than spawning some pawns and then throwing partway through the row.
+    public static string? SpawnPawns(Map map, PawnPlan plan)
     {
-        if (!TryResolveAnimalKind(plan.KindDefName, out PawnKindDef kind, out string? kindError))
+        if (!TryResolveKind(plan.KindDefName, out PawnKindDef kind, out string? kindError))
             return kindError;
+        if (!TryResolveFaction(plan.Faction, out Faction? faction, out string? factionError))
+            return factionError;
+        if (!TryResolveHediffs(kind, plan.Hediffs, out List<ResolvedHediff> hediffs, out string? hediffError))
+            return hediffError;
 
         IntVec3 anchor = ResolveAnchor(plan, map);
         List<string> refused = new List<string>();
@@ -428,13 +437,13 @@ public static class SceneBuilder
             IntVec3 cell = anchor + new IntVec3(placement.Dx, 0, placement.Dz);
             blockersHere.Clear();
 
-            // Clearing runs BEFORE the standable re-check inside TrySpawnAnimal, exactly as PlaceThings
+            // Clearing runs BEFORE the standable re-check inside TrySpawnPawn, exactly as PlaceThings
             // orders it against CanSpawnAt: a wall is destroyable, so clearing turns a cell that would
             // refuse a pawn into one that accepts it, while re-checking afterwards still keeps a
             // genuinely un-standable cell (deep water, an indestructible edifice) an honest refusal.
             PrepareCell(map, cell, plan.Clear, tally, blockersHere);
 
-            if (TrySpawnAnimal(kind, cell, map, out string? reason))
+            if (TrySpawnPawn(kind, faction, plan.Gender, hediffs, cell, map, out string? reason))
                 spawned++;
             else
                 refused.Add($"({cell.x},{cell.z}) {reason}{SceneClearing.RefusalDetail(blockersHere)}");
@@ -451,14 +460,14 @@ public static class SceneBuilder
         // failure this harness exists to catch.
         return JoinProblems(
             ShortfallError(spawned, plan.Cells.Count, kind.defName, refused),
-            ReportClearing(StepArgs.SpawnAnimalType, plan.Clear, tally));
+            ReportClearing(StepArgs.SpawnPawnType, plan.Clear, tally));
     }
 
     // errorOnFail: false — a bad kind name is a scenario bug that belongs in the report, not a
-    // Log.Error buried in Player.log. A non-animal kind is rejected here rather than generated: a
-    // colonist or mechanoid kind would come out of PawnGenerator with faction/gear this step does not
-    // yet handle, so the scope limit is enforced, not silently exceeded.
-    private static bool TryResolveAnimalKind(string kindDefName, out PawnKindDef kind, out string? error)
+    // Log.Error buried in Player.log. No animal-only guard any more: with faction support, any kind is
+    // legitimate (a player-faction Muffalo is a pet, a hostile Pirate is a raider), so RimWorld's own
+    // generation decides what a kind+faction combination means.
+    private static bool TryResolveKind(string kindDefName, out PawnKindDef kind, out string? error)
     {
         kind = DefDatabase<PawnKindDef>.GetNamed(kindDefName, errorOnFail: false);
         if (kind == null)
@@ -467,11 +476,105 @@ public static class SceneBuilder
             return false;
         }
 
-        // kind.race can be null on a malformed def; guard before touching RaceProps so the report reads
-        // as a scenario error rather than a NullReferenceException swallowed mid-run.
-        if (kind.race?.race == null || !kind.RaceProps.Animal)
+        error = null;
+        return true;
+    }
+
+    // Wild is a null faction (unaffiliated animal / wild man); player is the colony; hostile is a
+    // real enemy faction of the player, picked deterministically below.
+    private static bool TryResolveFaction(SpawnFaction which, out Faction? faction, out string? error)
+    {
+        error = null;
+        switch (which)
         {
-            error = $"'{kindDefName}' is not an animal — SpawnAnimal only spawns wild animals for now";
+            case SpawnFaction.Wild:
+                faction = null;
+                return true;
+            case SpawnFaction.Player:
+                faction = Faction.OfPlayer;
+                return true;
+            default:
+                faction = FirstEnemyFaction();
+                if (faction == null)
+                {
+                    error = "no usable enemy faction exists in this world, so a hostile pawn can't be " +
+                            "given a faction — the fixture has no faction hostile to the player";
+                    return false;
+                }
+
+                return true;
+        }
+    }
+
+    // The FIRST hostile faction in the world's own faction order rather than
+    // FactionManager.RandomEnemyFaction: a hostile spawn has to reproduce across runs for a report or
+    // screenshot to be comparable, and RandomEnemyFaction rolls the RNG.
+    private static Faction? FirstEnemyFaction()
+    {
+        Faction player = Faction.OfPlayer;
+        return Find.FactionManager.AllFactionsListForReading
+            .FirstOrDefault(f => IsUsableEnemy(f, player));
+    }
+
+    private static bool IsUsableEnemy(Faction f, Faction player) =>
+        f != player && !f.defeated && !f.temporary && !f.Hidden && f.HostileTo(player);
+
+    // Resolves every hediff spec against the DefDatabase and the KIND's shared body (BodyPartRecords
+    // live on the BodyDef, shared across all pawns of a race, so this needs no pawn instance). Done up
+    // front so a typo or a part the race lacks fails before any pawn is generated.
+    private static bool TryResolveHediffs(
+        PawnKindDef kind, List<HediffSpec> specs, out List<ResolvedHediff> resolved, out string? error)
+    {
+        resolved = new List<ResolvedHediff>();
+        foreach (HediffSpec spec in specs)
+        {
+            if (!TryResolveHediff(kind, spec, out ResolvedHediff one, out error))
+                return false;
+            resolved.Add(one);
+        }
+
+        error = null;
+        return true;
+    }
+
+    private static bool TryResolveHediff(
+        PawnKindDef kind, HediffSpec spec, out ResolvedHediff resolved, out string? error)
+    {
+        resolved = default;
+
+        HediffDef def = DefDatabase<HediffDef>.GetNamed(spec.DefName, errorOnFail: false);
+        if (def == null)
+        {
+            error = $"no HediffDef named '{spec.DefName}' in the active modset";
+            return false;
+        }
+
+        BodyPartRecord? part = null;
+        if (spec.BodyPartDefName != null && !TryResolveBodyPart(kind, spec.BodyPartDefName, out part, out error))
+            return false;
+
+        resolved = new ResolvedHediff(def, part, spec.Severity);
+        error = null;
+        return true;
+    }
+
+    private static bool TryResolveBodyPart(
+        PawnKindDef kind, string bodyPartDefName, out BodyPartRecord? part, out string? error)
+    {
+        part = null;
+
+        BodyPartDef partDef = DefDatabase<BodyPartDef>.GetNamed(bodyPartDefName, errorOnFail: false);
+        if (partDef == null)
+        {
+            error = $"no BodyPartDef named '{bodyPartDefName}' in the active modset";
+            return false;
+        }
+
+        // First matching part in the body's own order, so a two-legged pawn gets a deterministic leg.
+        part = kind.RaceProps.body.GetPartsWithDef(partDef).FirstOrDefault();
+        if (part == null)
+        {
+            error = $"'{kind.defName}' has no body part '{bodyPartDefName}' to attach a hediff to";
             return false;
         }
 
@@ -479,7 +582,9 @@ public static class SceneBuilder
         return true;
     }
 
-    private static bool TrySpawnAnimal(PawnKindDef kind, IntVec3 cell, Map map, out string? reason)
+    private static bool TrySpawnPawn(
+        PawnKindDef kind, Faction? faction, SpawnGender gender, List<ResolvedHediff> hediffs,
+        IntVec3 cell, Map map, out string? reason)
     {
         if (!cell.InBounds(map))
         {
@@ -498,14 +603,66 @@ public static class SceneBuilder
             return false;
         }
 
-        // Wild animal: null faction is what makes it unaffiliated wildlife, the deliberate default for
-        // this first cut. Rot4.South faces the animal toward the camera so screenshots are consistent
-        // rather than showing a randomly-turned pawn.
-        Pawn pawn = PawnGenerator.GeneratePawn(kind, null);
+        Pawn pawn = GenerateConfiguredPawn(kind, faction, gender);
+        ApplyHediffs(pawn, hediffs);
+
+        // Rot4.South faces the pawn toward the camera so screenshots are consistent rather than showing
+        // a randomly-turned pawn.
         GenSpawn.Spawn(pawn, cell, map, Rot4.South);
 
         reason = null;
         return true;
+    }
+
+    // A PawnGenerationRequest rather than the GeneratePawn(kind, faction) convenience, purely so
+    // fixedGender can be set; every other field takes the same default the convenience passes, so a
+    // wild/gender-unset spawn generates identically to before.
+    private static Pawn GenerateConfiguredPawn(PawnKindDef kind, Faction? faction, SpawnGender gender)
+    {
+        PawnGenerationRequest request = new PawnGenerationRequest(kind, faction, fixedGender: ToGender(gender));
+        return PawnGenerator.GeneratePawn(request);
+    }
+
+    private static Gender? ToGender(SpawnGender gender)
+    {
+        switch (gender)
+        {
+            case SpawnGender.Male:
+                return Gender.Male;
+            case SpawnGender.Female:
+                return Gender.Female;
+            default:
+                return null;
+        }
+    }
+
+    // AddHediff(def, part) creates and installs the hediff and hands it back, so severity is set on the
+    // returned instance. A null part is whole-body, which is what most conditions (diseases, blood
+    // loss, toxic buildup) want; a non-null part came from TryResolveBodyPart.
+    private static void ApplyHediffs(Pawn pawn, List<ResolvedHediff> hediffs)
+    {
+        foreach (ResolvedHediff h in hediffs)
+        {
+            Hediff added = pawn.health.AddHediff(h.Def, h.Part);
+            if (h.Severity is float severity)
+                added.Severity = severity;
+        }
+    }
+
+    // A hediff spec resolved to a real HediffDef, an optional shared BodyPartRecord, and a severity —
+    // everything ApplyHediffs needs, with no more string lookups per pawn.
+    private readonly struct ResolvedHediff
+    {
+        public readonly HediffDef Def;
+        public readonly BodyPartRecord? Part;
+        public readonly float? Severity;
+
+        public ResolvedHediff(HediffDef def, BodyPartRecord? part, float? severity)
+        {
+            Def = def;
+            Part = part;
+            Severity = severity;
+        }
     }
 
     // ----- dev-menu entry ---------------------------------------------------------------------

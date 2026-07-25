@@ -1,0 +1,14 @@
+{
+  "name": "spawn_colonists_hostiles",
+  "saveFile": "minimal_colony.rws",
+  "steps": [
+    { "type": "SetTile", "args": { "latitude": "45" } },
+    { "type": "SetTime", "args": { "hour": "12" } },
+    { "type": "SetTerrain", "args": { "def": "Concrete", "width": "34", "height": "18", "clear": "true" } },
+    { "type": "SpawnPawn", "args": { "kind": "Colonist", "faction": "player", "gender": "female", "count": "2", "spacing": "3", "offset": "-10,3", "clear": "true" } },
+    { "type": "SpawnPawn", "args": { "kind": "Pirate", "faction": "hostile", "count": "2", "spacing": "3", "offset": "-10,-3", "clear": "true" } },
+    { "type": "SpawnPawn", "args": { "kind": "Colonist", "faction": "player", "gender": "male", "hediffs": "Flu:0.6; MissingBodyPart@Leg", "offset": "6,0", "clear": "true" } },
+    { "type": "LookAt", "args": { "zoom": "18" } },
+    { "type": "Screenshot", "args": { "fileName": "colonists_and_hostiles.png" } }
+  ]
+}
