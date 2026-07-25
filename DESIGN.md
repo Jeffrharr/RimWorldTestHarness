@@ -303,9 +303,11 @@ the obvious alternative. Four things decided it the other way:
 - **Terrain isn't XML.** `<terrainGrid>` is a `<topGridDeflate>` base64 deflate blob keyed by def
   shortHashes that vary with the loaded modset. At runtime it's one `TerrainGrid.SetTerrain` call.
 - **It wouldn't cover the no-fixture path.** `Runner/run_test.sh` falls back to `-quicktest` when the
-  scenario names no existing fixture, and a generated colony has no save file to edit.
-  `shadow_casters_daycycle` deliberately takes that path — it needs no fixture at all, because
-  `SetTile` forces latitude and the scene is built from scratch.
+  scenario names no existing fixture, and a generated colony has no save file to edit — so a
+  save-authored scene simply cannot exist there, whereas a runtime-built one works on both paths.
+  (`shadow_casters_daycycle` itself names the `minimal_colony.rws` fixture, because a generated
+  colony's map centre needs rock and overhead roof cleared before it makes a usable backdrop; see
+  `TODO.md`'s quickstart entry.)
 - **It fails silently.** A `def` absent from the active modset makes RimWorld drop the node at load
   with only a log warning. `SceneBuilder` instead counts what actually spawned and reports any
   shortfall cell by cell. Note it has to ask `GenSpawn.CanSpawnAt` explicitly to do that: the `Thing`
@@ -371,12 +373,21 @@ enum's own member *names*, so the adapter does no branching at all and cannot dr
 `ApiCompatibilityTests` pins those names, since a rename would otherwise quietly turn a category into
 "leave alone" and clearing would stop clearing while still reporting success.
 
-Two further consequences worth knowing. `PlaceThings` spawns with `WipeMode.Vanish`, which destroys whatever
-occupies the footprint; that's acceptable in a batch run (the fixture is restored by the runner and
-the game is never saved) and is exactly why these three verbs are kept off the live companion channel,
-which points at a real player's colony. And the default `grid` layout is separate pillars rather than
-a closed wall rectangle, both because each pillar throws its own readable shadow and because a
-rectangle would read as a room.
+Two further consequences worth knowing. `PlaceThings` spawns with `WipeMode.Vanish`, which destroys
+whatever occupies the footprint; that's acceptable in a batch run (the fixture is restored by the
+runner and the game is never saved) and is why these three verbs are absent from
+`LiveCommandDriver`'s `HarnessVerbs`.
+
+Note that keeping them out of `HarnessVerbs` is **not** the same as making them unreachable live, and
+an earlier version of this document wrongly implied it was. `LiveCommandDriver` treats any
+unrecognised action name as a native dev-action and falls through to `DevActionCatalog.Invoke`, so the
+`[DebugAction]` wrapper is invocable over the live channel against a real player's colony. That is the
+reason `clear` defaults to *false* while `unfog` defaults to true: unfogging a colony is a cosmetic
+annoyance, whereas a default-on bulldoze would be one live-channel call from destroying someone's
+base with no undo. Anything added to that dev action inherits the same exposure.
+
+And the default `grid` layout is separate pillars rather than a closed wall rectangle, both because
+each pillar throws its own readable shadow and because a rectangle would read as a room.
 
 ## API compatibility tests
 
