@@ -4,7 +4,6 @@ using RimWorld;
 using RimWorldTestHarness.Mod.Features;
 using RimWorldTestHarness.Mod.Probes;
 using RimWorldTestHarness.Shared;
-using UnityEngine;
 using Verse;
 
 namespace RimWorldTestHarness.Mod;
@@ -200,24 +199,19 @@ public static class StepExecutor
 
     private static float LongitudeOf(Map map) => Find.WorldGrid.LongLatOf(map.Tile).x;
 
-    // Jumps the game clock so GenDate.DayOfYear/HourFloat read back exactly dayOfYear/hour at the
-    // given longitude, staying within the current in-game year. Mirrors GenDate's own
-    // DayOfYear/HourOfDay derivation (PositiveModRemap over TicksAbs + a longitude offset) in
-    // reverse.
+    // Thin adapter over the pure GameClock math: pull the live inputs off the TickManager/GenDate,
+    // compute the target ticksGame (with the never-negative clamp — see GameClock), and set it.
     private static void JumpToLocalTime(int dayOfYear, float hour, float longitude)
     {
-        long offset = GenDate.LocalTicksOffsetFromLongitude(longitude);
-        long currentAbs = Find.TickManager.TicksAbs;
-        long currentLocal = currentAbs + offset;
-        long yearStart = currentLocal - PositiveMod(currentLocal, GenDate.TicksPerYear);
-
-        int dayTick = Mathf.Clamp(Mathf.RoundToInt(hour * GenDate.TicksPerHour), 0, GenDate.TicksPerDay - 1);
-        long targetLocal = yearStart + (long)dayOfYear * GenDate.TicksPerDay + dayTick;
-        long targetAbs = targetLocal - offset;
-
-        long gameStartAbsTick = currentAbs - Find.TickManager.TicksGame;
-        Find.TickManager.DebugSetTicksGame((int)(targetAbs - gameStartAbsTick));
+        long newTicksGame = GameClock.LocalTimeToTicksGame(
+            Find.TickManager.TicksAbs,
+            Find.TickManager.TicksGame,
+            dayOfYear,
+            hour,
+            GenDate.LocalTicksOffsetFromLongitude(longitude),
+            GenDate.TicksPerHour,
+            GenDate.TicksPerDay,
+            GenDate.TicksPerYear);
+        Find.TickManager.DebugSetTicksGame((int)newTicksGame);
     }
-
-    private static long PositiveMod(long value, long modulus) => ((value % modulus) + modulus) % modulus;
 }
