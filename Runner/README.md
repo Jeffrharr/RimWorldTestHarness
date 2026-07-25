@@ -22,6 +22,44 @@ skip cleanup for post-mortem debugging).
 `reports/` (gitignored) holds timestamped `ScenarioReport` JSON per run, plus any screenshots the
 scenario captured.
 
+## Suites: several scenarios in one boot
+
+A boot costs minutes and a step costs milliseconds, so give it more than one scenario and they all
+run inside a single game load:
+
+```bash
+# Several scenarios, one boot:
+./run_test.sh ../Scenarios/daycycle_timelapse.json ../Scenarios/shadow_casters_daycycle.json
+# The shell globs:
+./run_test.sh ../../CelestialLighting/Tests/Scenarios/*.json
+# Or a checked-in list file:
+./run_test.sh --suite ../Scenarios/demo_suite.txt
+```
+
+One scenario given positionally behaves exactly as it always has, report shape included. Two or more
+(or any `--suite`) switches to suite mode: the report becomes a `SuiteReport` wrapping one
+`ScenarioReport` per scenario, and screenshot names are prefixed with their scenario
+(`<scenario>__<fileName>`) so independently authored scenarios can't overwrite each other's images.
+
+Between scenarios the driver restores what it can (clock, latitude, feature flags, time speed, camera,
+screenshot mode) and **reloads the save mid-session** where it cannot — after any scenario that ran
+`PlaceThings`/`SetTerrain`, whose map mutations are not undoable. `--isolation=auto|always|never`
+overrides that: `always` reloads before every scenario, `never` only soft-resets. See `DESIGN.md`,
+"Batching scenarios into one load".
+
+Two constraints worth knowing:
+
+- **All scenarios in one run must declare the same `saveFile`** — it is installed once at boot as
+  `autostart.rws` and reloaded from mid-run. Mixed fixtures are rejected up front rather than run
+  against whichever came first. `requiredMods` are unioned.
+- **Order matters for cost.** Put map-mutating scenarios last (or together at the end) and the suite
+  pays for fewer reloads. The runner never reorders — a suite that ran in a different order than it was
+  written would make a scenario's result depend on which others were in the run.
+
+With no fixture the runner falls back to `-quicktest`, which generates its colony at boot and writes no
+save — so there is nothing to reload, and a suite whose map-mutating scenario is followed by another
+fails with an explicit error rather than quietly running the second against the first's world.
+
 ## One run at a time (issue #6)
 
 The run mutates global machine state, so it defends itself rather than trusting that it is alone:

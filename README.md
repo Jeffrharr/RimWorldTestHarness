@@ -1,9 +1,11 @@
 # RimWorldTestHarness
 
 A dev-only RimWorld 1.6 mod + driver script for automating in-game verification of the other mods
-in this repo: launch RimWorld, replay a scripted scenario against a save, and either (a) check
-numeric probe readings against expected values (pass/fail gate) or (b) capture screenshots for
-visual review — or both in the same run.
+in this repo: launch RimWorld, replay one or more scripted scenarios against a save, and either (a)
+check numeric probe readings against expected values (pass/fail gate) or (b) capture screenshots for
+visual review — or both in the same run. Several scenarios run inside a single game load, with the
+save reloaded mid-session between the ones that mutated the map (see `Runner/README.md` and
+`DESIGN.md`, "Batching scenarios into one load").
 
 **Status: implemented, gated on one manual step.** Every piece (`Mod/`, `Runner/run_test.sh`,
 both test projects) is built and offline-tested. What's left is entirely a manual, non-scriptable
@@ -20,7 +22,7 @@ rather than a custom loader.
   `Probes/`.
 - `Runner/` — `run_test.sh`, the external launch/wait/gate script, plus `fetch_mods.sh` for
   downloading a scenario's Workshop dependencies.
-- `Scenarios/` — example `ScenarioSpec` JSON.
+- `Scenarios/` — example `ScenarioSpec` JSON, plus `*.txt` suite lists (one scenario path per line).
 - `Fixtures/` — save files scenarios load from (gitignored, manually created — see
   `Fixtures/README.md`).
 - `Tests/RimWorldTestHarness.Tests/` — NUnit tests for `Shared/`.

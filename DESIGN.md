@@ -41,7 +41,9 @@ Two complementary verification modes, driven by one JSON `ScenarioSpec` format
    modset-agnostic demo scenarios (e.g. `daycycle_timelapse`) live here.
 
 All modes share one spec format and one report format (`Shared/ScenarioReport.cs`) so a single
-scenario run can produce all of them at once.
+scenario run can produce all of them at once. A run can execute one scenario or a whole **suite** of
+them inside a single game load — see "Batching scenarios into one load" for how they are kept isolated
+from each other.
 
 ## Why a separate project, not bolted onto CelestialLighting
 
@@ -55,25 +57,31 @@ tested, the live-game plumbing is validated by actually running it.
 
 - **`Shared/`** (`netstandard2.0`, no `UnityEngine`/`Verse` dependency) — `ScenarioSpec`/
   `ScenarioStep`/`StepArgs` (the spec format), `ScenarioReport`/`ProbeCheckResult` (the report
-  format), `ReportComparer` (pure pass/fail logic), `ScenarioSpecLoader` (JSON parsing). This is
+  format), `ReportComparer` (pure pass/fail logic), `ScenarioSpecLoader` (JSON parsing), plus the
+  whole suite layer — `SuiteList` (selection), `ScenarioResidue` (what a scenario leaves behind),
+  `SuitePlan`/`SuitePlanner` (what has to happen between two scenarios), `SuiteScreenshots` (filename
+  policy) and `SuiteReport`. That the isolation *decision* is pure is deliberate: it is the part of
+  batching that is easy to get subtly wrong and impossible to check by looking at a green run. This is
   the part with real edge-case unit tests (`Tests/RimWorldTestHarness.Tests/`), following the same
   pure-core pattern as `CelestialLighting/Source/Formulas.cs`.
-- **`Mod/`** (`net481`) — `HarnessMod` (bootstrap, opt-in via `RWTH_SCENARIO` env var so the mod
-  is inert in normal play), `ScenarioDriver` (a tick-driven state machine that executes a spec's
-  steps against live game state, advanced by `Patch_DriveScenario`'s postfix on
+- **`Mod/`** (`net481`) — `HarnessMod` (bootstrap, opt-in via the `RWTH_SCENARIO`/`RWTH_SUITE` env
+  vars so the mod is inert in normal play), `ScenarioDriver` (a tick-driven state machine that
+  executes a suite's steps against live game state, advanced by `Patch_DriveScenario`'s postfix on
   `Root_Play.Update()` — see "Save loading" below for why it has to be tick-driven rather than
-  running synchronously at startup), `Patch_ForceDevMode`/`Patch_ForcedLatitude` (narrow Harmony
+  running synchronously at startup), `FixtureReloader`/`WorldStateReset` (the two Verse-touching
+  halves of scenario isolation, applying what `SuitePlanner` decided),
+  `Patch_ForceDevMode`/`Patch_ForcedLatitude` (narrow Harmony
   postfixes the driver's `SetTile` step and the vanilla autostart-save check depend on),
   `Probes/IProbe` + `ProbeRegistry` (the extension point other mods use to expose numeric probes),
   `Features/FeatureRegistry` (the parallel extension point for `SetFeature` — mods register named
   `Action<bool>` flag setters so scenarios can toggle effects for before/after screenshots).
-- **`Runner/run_test.sh`** — the external driver: launches RimWorld with a scenario, waits for
-  completion, gates on the report. Modeled on `MissileGirl/TestMods/run_test.sh`'s proven
-  launch/retry/log-wait/cleanup shape, adapted for a lighter single-scenario run and (unlike that
-  harness) real GPU rendering, since screenshots need it. Refuses to start if another run or a
-  RimWorld session is already live, and scopes its kills and temp files to itself — see "A run defends
-  itself instead of assuming it's alone" below.
-- **`Scenarios/`** — example/reusable `ScenarioSpec` JSON files.
+- **`Runner/run_test.sh`** — the external driver: launches RimWorld with a scenario or a suite, waits
+  for completion, gates on the report. Modeled on `MissileGirl/TestMods/run_test.sh`'s proven
+  launch/retry/log-wait/cleanup shape, adapted for a lighter run and (unlike that harness) real GPU
+  rendering, since screenshots need it. Refuses to start if another run or a RimWorld session is
+  already live, and scopes its kills and temp files to itself — see "A run defends itself instead of
+  assuming it's alone" below.
+- **`Scenarios/`** — example/reusable `ScenarioSpec` JSON files, plus `*.txt` suite lists.
 - **`Fixtures/`** — save files scenarios load from. Not auto-creatable (no headless "new colony"
   API — see below); each one is made manually once. Gitignored.
 
@@ -191,6 +199,144 @@ carries the same check, since it can be pumped during a load too.
 The lesson generalises past this bug: "the run exited 0" is not evidence a scenario verified anything.
 That is why `Errors` count toward `Pass`, and why a scenario that produces images should always have
 its images looked at.
+
+## Batching scenarios into one load
+
+A boot costs 2–4 minutes on the dev machine; a step costs milliseconds. So N scenarios used to cost
+N boots, which was the single biggest thing making the harness slow to iterate with. A run now takes
+a **suite** — several scenarios executed inside one game load — while scenarios stay authored
+independently, one JSON file each, with no cross-references.
+
+Selection is a **suite list file**: one scenario path per line, `#` for whole-line comments, relative
+paths resolved against the list file (`Shared/SuiteList.cs`). `Runner/run_test.sh` generates one from
+its CLI args (`run_test.sh a.json b.json c.json`, or a shell glob) and also accepts a hand-authored
+one (`--suite Scenarios/demo_suite.txt`). Either way the resolved list lands beside the report in
+`Runner/reports/`, so a run's artifacts record exactly which scenarios it was asked to cover — a
+suite whose membership can't be reconstructed afterwards is a suite whose green result means less
+than it looks like. A plain newline-delimited file was chosen over a delimited env var (paths contain
+`:` and spaces) and over a JSON suite format (a list of paths does not need a schema).
+
+All scenarios in one run must declare the same `saveFile`, because the save is installed once at boot
+and reloaded from mid-run; mixed fixtures are rejected rather than silently run against whichever came
+first. `requiredMods` are unioned.
+
+### State isolation: reload the save, but only where a reset can't reach
+
+Scenarios are not independent at runtime. Run back-to-back they leak `HarnessRuntime.ForcedLatitude`,
+the game clock, `FeatureRegistry` flags, `TimeSpeed`, camera position, vanilla's `screenshotMode`
+flag — and, least reversibly, **map mutations from scene setup**: `PlaceThings` spawns with
+`WipeMode.Vanish` (destroying whatever it replaced), `SetTerrain` repaints ground, and both lift fog.
+
+The four options were: declare it and order carefully; reset what we know we changed; reload the save
+between scenarios; group by compatibility. We do the **last two together**, and the split is exactly
+the flag set in `Shared/ScenarioResidue.cs`:
+
+- Everything except `Map` is **soft-resettable** — `Mod/WorldStateReset.cs` records the pristine
+  post-load values and assigns them back.
+- `Map` is not restorable at all, so a scenario following one that mutated the map gets a
+  **mid-session save reload** (`Mod/FixtureReloader.cs` → `GameDataSaveLoader.LoadGame(name)`).
+
+Option 1 alone was rejected outright: its failure mode is a scenario that passes alone and fails in a
+suite, or worse passes in a suite for the wrong reason, which is precisely the plausible-but-wrong
+outcome this repo exists to catch. Option 2 alone cannot honestly claim isolation for anything doing
+scene setup — and scene setup is how visual scenarios are made legible, so that is the growing case,
+not the exotic one.
+
+Cost is what makes the reload the right default rather than a luxury: a reload is seconds against a
+boot's minutes, so a suite of five map-mutating scenarios costs one boot plus four reloads instead of
+five boots. `Runner/run_test.sh --isolation=` overrides the policy: `auto` (the default, above),
+`always` (reload before every scenario — the answer to "I don't trust the residue analysis" while
+bisecting), `never` (soft reset only, an explicit assertion that the suite tolerates a shared world).
+
+Scenario **order is never changed**. Reordering to group map-mutating scenarios together would cut
+reloads, but then the suite that ran isn't the suite that was written down, and a scenario's result
+would depend on which others happened to be in the run. An extra reload is far cheaper than that
+ambiguity.
+
+Two deliberate asymmetries in how a shortfall is reported, both about consent:
+
+- `isolation=never` over a map-mutating boundary is a **note** — informational, never failing. The
+  caller chose it.
+- `isolation=auto` over the same boundary with no save to reload (the `-quicktest` path generates its
+  colony at boot and writes none) is an **error**, which fails the suite. Nobody asked for the
+  degradation; the environment imposed it, and the fix is a fixture or a split run.
+
+A step type nobody classified is assumed to dirty **everything**, so a future step added to
+`StepExecutor` and forgotten in `ScenarioResidueAnalyzer` degrades into "reload between everything"
+(slow but correct) rather than "share the world" (fast and wrong). A unit test fails when a valid step
+type falls into that default.
+
+### The reload re-arms the readiness gate
+
+`GameDataSaveLoader.LoadGame(name)` is exactly what vanilla's own in-game Load Game does: it *queues*
+a long event that clears maps/world, installs a fresh `Game` with `InitData.gameToLoad` set, and
+reloads the `Play` scene, where `Root_Play.Start()` picks `gameToLoad` up. `Root.checkedAutostartSaveFile`
+is already true by then, so the reloaded scene does not re-trigger the autostart path — which is why
+the save name is passed explicitly. Our Harmony patch is on `Root_Play.Update` as a *method* and this
+assembly's statics outlive the scene, so the driver keeps being pumped across the reload with its
+state intact.
+
+The `ProgramState.Playing` gate above has to be re-armed per load, and on its own it is **not enough**.
+Because `LoadGame` only queues, there is a frame or two where `ShouldWaitForEvent` is still false
+(there is no `currentEvent` yet and the queued one isn't the standard-window kind), `ProgramState` is
+still `Playing`, and `CurrentMap` is still the old map — indistinguishable from "the reload already
+finished". `ScenarioDriver.ReloadFinished` therefore also requires `Current.Game` to be a *different
+instance*, which is the postcondition that says the reload genuinely happened rather than that we
+never left. Vanilla replaces `Current.Game` three times over one load, so the identity always changes.
+
+Two further hazards the reload path introduced:
+
+- `Root_Play.Start()` ends with `ScreenFader` fading in from black over 0.5s, so the initial-load
+  settle of 5 frames would let a `Screenshot` capture a partly-black frame. Post-*reload* settle is 60
+  frames instead (≥ 0.5s at 60fps; a lower framerate only makes the wait longer in wall-clock terms).
+- A reload that never completes must fail loudly, not hang. The driver holds a wall-clock deadline and
+  aborts the suite with a named error if it expires, and `FixtureReloader` pre-checks the save exists
+  (`GenFilePaths.FilePathForSavedGame`) — without that, a missing save throws on the long-event thread
+  and all the caller sees is a timeout.
+
+The reload is also a real `[DebugAction]` ("Quickload autostart save"), same rule as
+`HarnessDebugActions`' screenshot: harness capabilities are game dev commands sharing one core, not a
+parallel private path. It also lets a human confirm a mid-session reload works with one click in a
+normally-launched game, without running a batch.
+
+### Suite report: a wrapper, not a widened scenario report
+
+`Shared/ScenarioReport.cs` is unchanged. `SuiteReport` wraps a list of them plus suite-level `Errors`
+and `IsolationNotes`, and `SuiteReportSerializer` writes the **bare** single-scenario shape for a run
+launched with `RWTH_SCENARIO` and the wrapper for one launched with `RWTH_SUITE`. Keying off the launch
+mode rather than the scenario count means the runner always knows which shape to expect; a consumer
+reading a report cold tells them apart by the `Scenarios` key. The single-scenario path — the fallback
+— therefore produces byte-identical output to before.
+
+Three properties the suite gate (`ReportComparer.AllPass(SuiteReport)`) exists to hold, each a version
+of the vacuous-truth bug that `AllPass(checks, errors)` already guards against one level down:
+
+- **No suite-level errors.** A reload that never completed, an unparsable suite list or a screenshot
+  name collision invalidates the run as a whole, even if every scenario that did run passed.
+- **At least one scenario.** `All()` over an empty list is `true`, so an empty suite would otherwise
+  pass.
+- **Every scenario passed** — including ones a mid-suite abort never reached. Those are still listed,
+  carrying an explicit "did not run" error, so a truncated suite can neither shrink into a green one
+  nor look like scenarios that ran and failed. A scenario file that fails to load likewise becomes a
+  named, step-less placeholder rather than vanishing from the list.
+
+A failing *step* never truncates anything: it is recorded against its scenario and the run continues,
+same as before.
+
+### Screenshot names are qualified, and checked anyway
+
+Two scenarios written independently will happily both ask for `shot.png`, or for a `Timelapse` with
+prefix `timelapse`, and in one shared report folder the second silently overwrites the first — a green
+run over the wrong images. Two independent defences: suite screenshots are prefixed with their
+scenario (`<sanitized name>__<fileName>`, `Shared/SuiteScreenshots.cs`), **and** the final names are
+checked for duplicates at plan time regardless, which catches what qualification can't (two names that
+sanitize alike, or one scenario reusing a fileName). Single runs are left unqualified so their output
+filenames are exactly what they have always been.
+
+`Runner/run_test.sh` mirrors the qualification rule in bash to find a suite's timelapse frames for
+ffmpeg. That duplication is deliberate and bounded: the rule is trivial by design (sanitize to
+`[A-Za-z0-9._-]`, join with `__`), a unit test pins the exact C# spelling, and a drift would surface as
+the existing loud "declares a timelapse but no frames were written" warning rather than a wrong video.
 
 ## Screenshot capture requires GPU rendering
 

@@ -26,6 +26,37 @@ Status: all pieces are implemented and offline-tested (`Shared/`, `Mod/`, `Runne
   `screenshotMode` blanked the HUD. This is the thing `shadow_lean_equinox`'s screenshot couldn't
   show: the lean is now reviewable, not just numerically gated.
 
+- [ ] **Live-verify the mid-suite reload** — the whole suite feature is offline-tested and builds
+  clean, but the mid-session `GameDataSaveLoader.LoadGame` reload has NOT been exercised in a live
+  run. Everything the reload depends on is pinned in `Tests/RimWorldTestHarness.ApiTests` and matches
+  1.6, but pinned API existence is not the same as the sequence behaving. What needs confirming, in
+  order:
+    1. The `[DebugAction]` on its own: launch normally with a colony, dev menu →
+       `RimWorldTestHarness` → "Quickload autostart save" (needs a `Saves/autostart.rws` present).
+       It should reload into that save with no errors — that alone validates the reload core.
+    2. A two-scenario suite with the map-mutating one FIRST, so a reload is actually planned:
+       `Runner/run_test.sh Scenarios/shadow_casters_daycycle.json Scenarios/daycycle_timelapse.json`
+       against a fixture. Expect Player.log to show `RWTH: starting scenario 2/2 ... (isolation:
+       ReloadSave)`, then a normal load, then scenario 2's frames.
+    3. That the second scenario's frames are **clean** — no granite pillars and no concrete pad from
+       scenario 1, and not black/faded (that's what `PostReloadSettleFrames = 60` is for; if frames
+       are dark, raise it).
+    4. That frame files are qualified per scenario
+       (`shadow_casters_daycycle__casters_0000.png`, `daycycle_timelapse__daycycle_0000.png`) and that
+       both `.mp4`s stitch.
+  Also worth confirming a reload actually costs seconds rather than approaching a boot — the whole
+  cost argument for choosing reload over reset rests on that, and it is currently a reasoned estimate,
+  not a measurement.
+- [ ] **Snapshot save for the no-fixture path** — `-quicktest` generates its colony at boot and writes
+  no save, so a suite there has nothing to reload and `SuitePlanner` (correctly) errors rather than
+  pretending a map-mutating suite was isolated. `GameDataSaveLoader.SaveGame(name)` once at batch start
+  would give quicktest suites the same isolation as fixture ones, at the cost of one save into the
+  user's Saves folder that `run_test.sh` would have to clean up. Deliberately deferred: it adds more
+  live-game surface to a feature whose reload path is itself not yet live-verified.
+- [ ] **Intra-scenario screenshot collisions on the single-scenario path** — `SuiteScreenshots` catches
+  a scenario reusing one `fileName` twice, but only for suites; a single-scenario run still silently
+  overwrites. Left alone so the single path stays byte-identical to what has been proven live, but it
+  is the same silent-overwrite hazard and should eventually gate there too.
 - [ ] **Gate on RimWorld's own logged errors** — surfaced while debugging the quickstart blockers:
   `ReportComparer.AllPass(checks, errors)` catches failing steps, but nothing catches the *game*
   logging 12 root-level exceptions and rendering no map — that run still exited 0. Worth having
@@ -101,6 +132,21 @@ fixture story self-serve instead of manual:
 
 ## Done
 
+- [x] **Run multiple scenarios in a single RimWorld load**
+  ([#3](https://github.com/Jeffrharr/RimWorldTestHarness/issues/3)) — implemented and offline-tested;
+  the live reload still needs confirming (see the open item above). A run now takes a suite (CLI args,
+  a shell glob, or `--suite <list.txt>`) and executes every scenario in one boot, which was the main
+  thing making the harness slow to iterate with. Isolation strategy: soft-reset the state we can
+  restore (clock/latitude/feature flags/time speed/camera/screenshotMode via `Mod/WorldStateReset.cs`)
+  and **reload the save mid-session** where we cannot — i.e. after any scenario that ran
+  `PlaceThings`/`SetTerrain`, since `WipeMode.Vanish`, repainted terrain and lifted fog are not
+  undoable. Overridable with `--isolation=auto|always|never`. All the deciding is pure and offline-
+  tested (`Shared/ScenarioResidue.cs`, `Shared/SuitePlan.cs`, `Shared/SuiteScreenshots.cs`,
+  `Shared/SuiteList.cs`, `Shared/SuiteReport.cs`); the Verse-touching adapters are
+  `Mod/FixtureReloader.cs` (also a real `[DebugAction]`, "Quickload autostart save") and
+  `Mod/WorldStateReset.cs`. The single-scenario path is untouched, report shape included. See
+  `DESIGN.md`, "Batching scenarios into one load", for the full rationale and the three suite-level
+  gates that keep a truncated or empty suite from reading as green.
 - [x] **Scene setup: things, terrain and camera** — three new steps, `PlaceThings` / `SetTerrain` /
   `LookAt`. Layout arithmetic and arg validation are pure (`Shared/SceneLayout.cs`, offline-tested);
   `Mod/SceneBuilder.cs` is the Verse-touching adapter and also exposes a "Place shadow-caster grid"
