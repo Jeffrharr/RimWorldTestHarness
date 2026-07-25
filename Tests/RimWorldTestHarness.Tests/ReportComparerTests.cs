@@ -62,4 +62,37 @@ public class ReportComparerTests
 
         Assert.That(ReportComparer.AllPass(checks), Is.False);
     }
+
+    // The errors-aware overload is the gate a run actually uses. The empty-checks case is the one
+    // that matters: a scenario with no Probe step at all (a pure screenshot or timelapse run) would
+    // otherwise report Pass no matter how many of its steps blew up.
+    [Test]
+    public void AllPass_NoChecksButErrors_IsFalse()
+    {
+        Assert.That(
+            ReportComparer.AllPass(new List<ProbeCheckResult>(), new List<string> { "PlaceThings: boom" }),
+            Is.False);
+    }
+
+    [Test]
+    public void AllPass_PassingChecksButErrors_IsFalse()
+    {
+        var checks = new List<ProbeCheckResult> { ReportComparer.CheckProbe("a", 1f, 1f, 0f) };
+
+        Assert.That(ReportComparer.AllPass(checks, new List<string> { "SetTerrain: boom" }), Is.False);
+    }
+
+    [Test]
+    public void AllPass_PassingChecksNoErrors_IsTrue()
+    {
+        var checks = new List<ProbeCheckResult> { ReportComparer.CheckProbe("a", 1f, 1f, 0f) };
+
+        Assert.That(ReportComparer.AllPass(checks, new List<string>()), Is.True);
+    }
+
+    [Test]
+    public void AllPass_NoChecksNoErrors_IsTrue()
+    {
+        Assert.That(ReportComparer.AllPass(new List<ProbeCheckResult>(), new List<string>()), Is.True);
+    }
 }

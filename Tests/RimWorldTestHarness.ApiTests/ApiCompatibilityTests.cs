@@ -420,6 +420,295 @@ public class ApiCompatibilityTests
         Assert.That(getter, Is.Not.Null, "Find.UIRoot getter no longer exists");
     }
 
+    // --- Scene setup (Mod/SceneBuilder.cs) ---
+    //
+    // The spawn/terrain/camera surface that turns a SceneLayout plan into actual geometry. Pinning
+    // this is what buys the runtime-spawn approach its advantage over hand-authoring the save XML: if
+    // Ludeon moves any of it, these tests fail loudly at build time instead of a scenario quietly
+    // placing nothing and screenshotting empty ground.
+
+    // The two trailing bool parameters (respawningAfterLoad, forbidLeavings) are optional, so
+    // SceneBuilder's four-argument call site binds to this seven-parameter overload. Pinned at full
+    // arity because that is what the compiler actually resolves.
+    private static MethodDefinition? ThingSpawnOverload(TypeDefinition genSpawn) =>
+        genSpawn.Methods.SingleOrDefault(m =>
+            m.Name == "Spawn" &&
+            m.Parameters.Count == 7 &&
+            m.Parameters[0].ParameterType.FullName == "Verse.Thing" &&
+            m.Parameters[1].ParameterType.FullName == "Verse.IntVec3" &&
+            m.Parameters[2].ParameterType.FullName == "Verse.Map" &&
+            m.Parameters[3].ParameterType.FullName == "Verse.Rot4" &&
+            m.Parameters[4].ParameterType.FullName == "Verse.WipeMode" &&
+            m.Parameters[5].ParameterType.FullName == "System.Boolean" &&
+            m.Parameters[6].ParameterType.FullName == "System.Boolean");
+
+    [Test]
+    public void GenSpawn_Spawn_ThingRotWipeModeOverloadExists()
+    {
+        var type = GetType(_game, "Verse.GenSpawn");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(ThingSpawnOverload(type!), Is.Not.Null,
+            "GenSpawn.Spawn(Thing, IntVec3, Map, Rot4, WipeMode, bool, bool) no longer exists — SceneBuilder can't place things");
+    }
+
+    // SceneBuilder treats a null return as "this cell refused the thing" and reports the shortfall.
+    // A return-type change would break that detection silently.
+    [Test]
+    public void GenSpawn_Spawn_ReturnsThing()
+    {
+        var type = GetType(_game, "Verse.GenSpawn");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(ThingSpawnOverload(type!)?.ReturnType.FullName, Is.EqualTo("Verse.Thing"),
+            "GenSpawn.Spawn no longer returns Thing — SceneBuilder's refused-cell detection relies on a null return");
+    }
+
+    // SceneBuilder checks this explicitly, because the Thing overload of Spawn (unlike the ThingDef
+    // one) never consults it — without this call a wall asked to stand in deep water would be
+    // reported as successfully placed.
+    [Test]
+    public void GenSpawn_CanSpawnAt_Exists()
+    {
+        var type = GetType(_game, "Verse.GenSpawn");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "CanSpawnAt" &&
+            m.Parameters.Count == 5 &&
+            m.Parameters[0].ParameterType.FullName == "Verse.ThingDef" &&
+            m.Parameters[1].ParameterType.FullName == "Verse.IntVec3" &&
+            m.Parameters[2].ParameterType.FullName == "Verse.Map" &&
+            m.Parameters[3].ParameterType.FullName == "System.Nullable`1<Verse.Rot4>" &&
+            m.Parameters[4].ParameterType.FullName == "System.Boolean");
+        Assert.That(method, Is.Not.Null,
+            "GenSpawn.CanSpawnAt(ThingDef, IntVec3, Map, Rot4?, bool) no longer exists — SceneBuilder could no longer tell a refused cell from a placed one");
+    }
+
+    [Test]
+    public void WipeMode_VanishMemberExists()
+    {
+        var type = GetType(_game, "Verse.WipeMode");
+        Assert.That(type, Is.Not.Null);
+        var field = type!.Fields.SingleOrDefault(f => f.Name == "Vanish");
+        Assert.That(field, Is.Not.Null, "Verse.WipeMode.Vanish no longer exists — SceneBuilder's spawn call won't compile");
+    }
+
+    [Test]
+    public void ThingMaker_MakeThing_Exists()
+    {
+        var type = GetType(_game, "Verse.ThingMaker");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "MakeThing" &&
+            m.Parameters.Count == 2 &&
+            m.Parameters[0].ParameterType.FullName == "Verse.ThingDef" &&
+            m.Parameters[1].ParameterType.FullName == "Verse.ThingDef");
+        Assert.That(method, Is.Not.Null,
+            "ThingMaker.MakeThing(ThingDef, ThingDef) no longer exists — SceneBuilder can't build a stuffed thing");
+    }
+
+    [Test]
+    public void GenStuff_DefaultStuffFor_Exists()
+    {
+        var type = GetType(_game, "RimWorld.GenStuff");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "DefaultStuffFor" &&
+            m.Parameters.Count == 1 &&
+            m.Parameters[0].ParameterType.FullName == "Verse.BuildableDef");
+        Assert.That(method, Is.Not.Null,
+            "GenStuff.DefaultStuffFor(BuildableDef) no longer exists — SceneBuilder can't pick stuff for a MadeFromStuff def");
+    }
+
+    // errorOnFail: false is what keeps an unknown def out of Player.log and in the run's report, so
+    // the two-arg overload specifically has to survive.
+    [Test]
+    public void DefDatabase_GetNamed_HasErrorOnFailOverload()
+    {
+        var type = GetType(_game, "Verse.DefDatabase`1");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "GetNamed" &&
+            m.Parameters.Count == 2 &&
+            m.Parameters[0].ParameterType.FullName == "System.String" &&
+            m.Parameters[1].ParameterType.FullName == "System.Boolean");
+        Assert.That(method, Is.Not.Null,
+            "DefDatabase<T>.GetNamed(string, bool) no longer exists — SceneBuilder would have to let def lookups Log.Error");
+    }
+
+    // SceneBuilder reads both off a ThingDef, but MadeFromStuff is declared one level up on
+    // BuildableDef and reached by inheritance — so each is pinned where it actually lives, or a
+    // rename there would slip past a ThingDef-only check.
+    [Test]
+    public void ThingDef_StuffMembersExist()
+    {
+        var thingDef = GetType(_game, "Verse.ThingDef");
+        var buildableDef = GetType(_game, "Verse.BuildableDef");
+        Assert.That(thingDef, Is.Not.Null);
+        Assert.That(buildableDef, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            Assert.That(buildableDef!.Properties.SingleOrDefault(p => p.Name == "MadeFromStuff")?.GetMethod,
+                Is.Not.Null,
+                "BuildableDef.MadeFromStuff no longer exists — SceneBuilder can't tell whether a def needs stuff");
+            Assert.That(thingDef!.Properties.SingleOrDefault(p => p.Name == "IsStuff")?.GetMethod, Is.Not.Null,
+                "ThingDef.IsStuff no longer exists — SceneBuilder can't reject a non-stuff stuff arg");
+        });
+    }
+
+    [Test]
+    public void Rot4_FromString_Exists()
+    {
+        var type = GetType(_game, "Verse.Rot4");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "FromString" && m.Parameters.Count == 1 &&
+            m.Parameters[0].ParameterType.FullName == "System.String");
+        Assert.That(method, Is.Not.Null,
+            "Rot4.FromString(string) no longer exists — SceneLayout validates rotation names against it");
+    }
+
+    [Test]
+    public void GenGrid_InBounds_MapOverloadExists()
+    {
+        var type = GetType(_game, "Verse.GenGrid");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "InBounds" &&
+            m.Parameters.Count == 2 &&
+            m.Parameters[0].ParameterType.FullName == "Verse.IntVec3" &&
+            m.Parameters[1].ParameterType.FullName == "Verse.Map");
+        Assert.That(method, Is.Not.Null,
+            "GenGrid.InBounds(IntVec3, Map) no longer exists — SceneBuilder can't bounds-check placements");
+    }
+
+    [Test]
+    public void Map_CenterTerrainGridAndFogGridExist()
+    {
+        var type = GetType(_game, "Verse.Map");
+        Assert.That(type, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            Assert.That(type!.Properties.SingleOrDefault(p => p.Name == "Center")?.GetMethod, Is.Not.Null,
+                "Map.Center no longer exists — SceneLayout's default \"center\" anchor can't resolve");
+            var terrainGrid = type.Fields.SingleOrDefault(f => f.Name == "terrainGrid");
+            Assert.That(terrainGrid, Is.Not.Null, "Map.terrainGrid no longer exists — SetTerrain can't paint");
+            Assert.That(terrainGrid!.FieldType.FullName, Is.EqualTo("Verse.TerrainGrid"),
+                "Map.terrainGrid changed type — SceneBuilder.PaintTerrain would stop compiling");
+            var fogGrid = type.Fields.SingleOrDefault(f => f.Name == "fogGrid");
+            Assert.That(fogGrid, Is.Not.Null, "Map.fogGrid no longer exists — scene setup can't lift fog");
+            Assert.That(fogGrid!.FieldType.FullName, Is.EqualTo("Verse.FogGrid"),
+                "Map.fogGrid changed type — SceneBuilder.Unfog would stop compiling");
+        });
+    }
+
+    // Without this the scene is built correctly and is completely invisible on a freshly generated
+    // colony, because RimWorld draws neither terrain nor things in fogged cells.
+    [Test]
+    public void FogGrid_ClearAllFog_Exists()
+    {
+        var type = GetType(_game, "Verse.FogGrid");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m => m.Name == "ClearAllFog" && m.Parameters.Count == 0);
+        Assert.That(method, Is.Not.Null,
+            "FogGrid.ClearAllFog() no longer exists — SceneBuilder.Unfog can't reveal the built scene");
+    }
+
+    // --- Driver readiness gate (ScenarioDriver.ReadyToRun / LiveCommandDriver.Tick) ---
+    //
+    // A non-null CurrentMap is not enough: it goes non-null partway through InitNewGame/LoadGame, and
+    // stepping in that window corrupted tick state and produced a false-pass run. ProgramState.Playing
+    // is the real signal, set by Game.FinalizeInit.
+
+    [Test]
+    public void Current_ProgramState_GetterExists()
+    {
+        var type = GetType(_game, "Verse.Current");
+        Assert.That(type, Is.Not.Null);
+        var getter = type!.Properties.SingleOrDefault(p => p.Name == "ProgramState")?.GetMethod;
+        Assert.That(getter, Is.Not.Null,
+            "Current.ProgramState no longer exists — the driver readiness gate can't tell a half-initialized game from a playable one");
+    }
+
+    [Test]
+    public void ProgramState_PlayingMemberExists()
+    {
+        var type = GetType(_game, "Verse.ProgramState");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(type!.Fields.SingleOrDefault(f => f.Name == "Playing"), Is.Not.Null,
+            "Verse.ProgramState.Playing no longer exists — the driver readiness gate won't compile");
+    }
+
+    [Test]
+    public void Game_FinalizeInit_Exists()
+    {
+        var type = GetType(_game, "Verse.Game");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m => m.Name == "FinalizeInit" && m.Parameters.Count == 0);
+        Assert.That(method, Is.Not.Null,
+            "Game.FinalizeInit() no longer exists — it is what sets ProgramState.Playing, which the readiness gate waits for");
+    }
+
+    [Test]
+    public void TerrainGrid_SetTerrain_Exists()
+    {
+        var type = GetType(_game, "Verse.TerrainGrid");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "SetTerrain" &&
+            m.Parameters.Count == 2 &&
+            m.Parameters[0].ParameterType.FullName == "Verse.IntVec3" &&
+            m.Parameters[1].ParameterType.FullName == "Verse.TerrainDef");
+        Assert.That(method, Is.Not.Null,
+            "TerrainGrid.SetTerrain(IntVec3, TerrainDef) no longer exists — the SetTerrain step can't work");
+    }
+
+    [Test]
+    public void CellRect_CenteredOn_WidthHeightOverloadExists()
+    {
+        var type = GetType(_game, "Verse.CellRect");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "CenteredOn" &&
+            m.Parameters.Count == 3 &&
+            m.Parameters[0].ParameterType.FullName == "Verse.IntVec3" &&
+            m.Parameters[1].ParameterType.FullName == "System.Int32" &&
+            m.Parameters[2].ParameterType.FullName == "System.Int32");
+        Assert.That(method, Is.Not.Null,
+            "CellRect.CenteredOn(IntVec3, int, int) no longer exists — SceneBuilder.PaintTerrain builds its rect with it");
+    }
+
+    // JumpToCurrentMapLoc rather than PanToMapLoc: the pan animates over several frames, which a
+    // scenario would then have to wait out before screenshotting.
+    [Test]
+    public void CameraDriver_JumpAndZoomMembersExist()
+    {
+        var type = GetType(_game, "Verse.CameraDriver");
+        Assert.That(type, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            Assert.That(
+                type!.Methods.SingleOrDefault(m =>
+                    m.Name == "JumpToCurrentMapLoc" && m.Parameters.Count == 1 &&
+                    m.Parameters[0].ParameterType.FullName == "Verse.IntVec3"),
+                Is.Not.Null,
+                "CameraDriver.JumpToCurrentMapLoc(IntVec3) no longer exists — the LookAt step can't aim the camera");
+            Assert.That(
+                type.Methods.SingleOrDefault(m =>
+                    m.Name == "SetRootSize" && m.Parameters.Count == 1 &&
+                    m.Parameters[0].ParameterType.FullName == "System.Single"),
+                Is.Not.Null,
+                "CameraDriver.SetRootSize(float) no longer exists — LookAt's zoom arg can't apply");
+        });
+    }
+
+    [Test]
+    public void Find_CameraDriver_GetterExists()
+    {
+        var type = GetType(_game, "Verse.Find");
+        Assert.That(type, Is.Not.Null);
+        var getter = type!.Properties.SingleOrDefault(p => p.Name == "CameraDriver")?.GetMethod;
+        Assert.That(getter, Is.Not.Null, "Find.CameraDriver getter no longer exists — LookAt can't reach the camera");
+    }
+
     // --- helpers ---
 
     private static TypeDefinition? GetType(ModuleDefinition module, string fullName) =>

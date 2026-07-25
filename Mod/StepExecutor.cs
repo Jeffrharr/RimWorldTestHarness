@@ -53,6 +53,12 @@ public sealed class StepContext
 // out, holding no per-run state of its own (the drivers own that).
 public static class StepExecutor
 {
+    // Spawning a building or repainting terrain dirties the glow grid and the shadow map, which
+    // vanilla recomputes on a later frame. One frame is enough for geometry (unlike a clock jump,
+    // which TimelapseExpander gives two) because nothing here has to propagate through the sky
+    // colour chain — raise it if a scene-setup screenshot ever shows the pre-placement lighting.
+    private const int SceneSettleFrames = 1;
+
     // Runs one action. Any exception (e.g. a malformed numeric arg) is turned into a failed
     // StepOutcome rather than propagating out through the Root_Play.Update postfix that ultimately
     // calls this — a bad scenario/command should surface as an error entry, not crash the frame.
@@ -88,6 +94,12 @@ public static class StepExecutor
                 return SetFeature(args);
             case StepArgs.WaitType:
                 return Wait(args);
+            case StepArgs.PlaceThingsType:
+                return PlaceThings(args, ctx);
+            case StepArgs.SetTerrainType:
+                return SetTerrain(args, ctx);
+            case StepArgs.LookAtType:
+                return LookAt(args, ctx);
             case StepArgs.TimelapseType:
                 // TimelapseExpander desugars these at load time, so one reaching the executor means
                 // its args failed validation and it was deliberately left un-expanded. The specific
@@ -190,6 +202,52 @@ public static class StepExecutor
             return StepOutcome.Fail($"'{StepArgs.WaitFrames}' must not be negative (got {frames})");
 
         return new StepOutcome { WaitFrames = frames };
+    }
+
+    // Scene setup: put deliberate, known-position geometry on the map so a lighting screenshot has
+    // something to actually show. All the layout arithmetic and arg validation is in the pure
+    // Shared/SceneLayout.cs; SceneBuilder is the Verse-touching adapter. These three handlers are
+    // just the seam between them.
+    //
+    // Each returns WaitFrames = SceneSettleFrames so a following Screenshot can't capture the frame
+    // before the glow grid and shadow direction have taken the new geometry into account — the same
+    // staleness hazard the Wait step exists for, but built in rather than left to the scenario
+    // author, because forgetting it produces a plausible-looking wrong image.
+    private static StepOutcome PlaceThings(IReadOnlyDictionary<string, string> args, StepContext ctx)
+    {
+        if (!SceneLayout.TryPlan(args, out ScenePlan plan, out string? error))
+            return StepOutcome.Fail($"PlaceThings: {error}");
+
+        string? buildError = SceneBuilder.Build(ctx.Map, plan);
+        if (buildError != null)
+            return StepOutcome.Fail($"PlaceThings: {buildError}");
+
+        return new StepOutcome { WaitFrames = SceneSettleFrames };
+    }
+
+    private static StepOutcome SetTerrain(IReadOnlyDictionary<string, string> args, StepContext ctx)
+    {
+        if (!SceneLayout.TryPlanTerrain(args, out TerrainPlan plan, out string? error))
+            return StepOutcome.Fail($"SetTerrain: {error}");
+
+        string? paintError = SceneBuilder.PaintTerrain(ctx.Map, plan);
+        if (paintError != null)
+            return StepOutcome.Fail($"SetTerrain: {paintError}");
+
+        return new StepOutcome { WaitFrames = SceneSettleFrames };
+    }
+
+    // No settle wait: the camera jump is instant and changes nothing the lighting depends on.
+    private static StepOutcome LookAt(IReadOnlyDictionary<string, string> args, StepContext ctx)
+    {
+        if (!SceneLayout.TryPlanLookAt(args, out LookAtPlan plan, out string? error))
+            return StepOutcome.Fail($"LookAt: {error}");
+
+        string? lookError = SceneBuilder.LookAt(ctx.Map, plan);
+        if (lookError != null)
+            return StepOutcome.Fail($"LookAt: {lookError}");
+
+        return new StepOutcome();
     }
 
     // Absent means "use the caller's default" rather than "false", so adding an optional flag to a

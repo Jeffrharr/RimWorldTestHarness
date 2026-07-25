@@ -29,4 +29,13 @@ public static class ReportComparer
     // A scenario passes only if every probe check in it passed. Screenshot steps never affect
     // Pass — they're the complementary visual-confirm channel, not part of the numeric gate.
     public static bool AllPass(IReadOnlyList<ProbeCheckResult> checks) => checks.All(c => c.Pass);
+
+    // The gate a run should actually use. Errors have to count, because AllPass over an empty list is
+    // true: without this, a scenario whose every step errored and which has no Probe step reports
+    // Pass and the runner exits 0, with the errors printed but ungated. That matters most for steps
+    // that only produce images — a failed PlaceThings would otherwise leave a plausible-looking empty
+    // screenshot on a green run, which is the silent-underverification failure this harness exists to
+    // prevent.
+    public static bool AllPass(IReadOnlyList<ProbeCheckResult> checks, IReadOnlyList<string> errors) =>
+        errors.Count == 0 && AllPass(checks);
 }

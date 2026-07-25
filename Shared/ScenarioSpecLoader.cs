@@ -24,6 +24,9 @@ public static class ScenarioSpecLoader
         // spec therefore no longer round-trips to its source JSON — nothing re-serializes a spec,
         // and the report records what actually ran.
         spec.Steps = TimelapseExpander.ExpandAll(spec.Steps, spec.LoadErrors);
+        // Validated after expansion so it checks the primitive steps that will actually execute, and
+        // so a Timelapse that failed to expand isn't reported a second time.
+        StepValidator.ValidateAll(spec.Steps, spec.LoadErrors);
         return spec;
     }
 }

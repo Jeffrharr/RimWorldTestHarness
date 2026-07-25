@@ -34,6 +34,38 @@ public static class StepArgs
     public const string WaitType = "Wait";
     public const string WaitFrames = "frames"; // int >= 0, rendered frames to idle before the next step
 
+    // Scene setup. Shared by PlaceThings/SetTerrain/LookAt because all three answer "where on the
+    // map?" the same way, and a scenario author shouldn't have to remember three spellings of it.
+    // Anchors and offsets are whole cells; see SceneLayout for the grammar and SceneBuilder for how
+    // an anchor resolves against a live map.
+    public const string SceneDef = "def";       // ThingDef (PlaceThings) or TerrainDef (SetTerrain) defName
+    public const string SceneAnchor = "anchor"; // "center" (default) or absolute map cells "125,125"
+    public const string SceneOffset = "offset"; // "dx,dz" whole cells from the anchor, default "0,0"
+
+    // Whether PlaceThings/SetTerrain lift fog of war after building. Defaults to TRUE because a
+    // freshly generated colony has only a small revealed pocket, and RimWorld draws neither terrain
+    // nor things in fogged cells — so a scene built at map centre is invisible, with every step still
+    // reporting success. Opt out with "false" when a scenario genuinely wants fog left alone.
+    public const string SceneUnfog = "unfog"; // bool, default true
+
+    public const string PlaceThingsType = "PlaceThings";
+    public const string PlaceThingsLayout = "layout";   // "grid" (default) | "row" | "cells"
+    public const string PlaceThingsStuff = "stuff";     // stuff ThingDef; omit for the def's default
+    public const string PlaceThingsRot = "rot";         // North (default) | East | South | West
+    public const string PlaceThingsCols = "cols";       // grid only, int >= 1
+    public const string PlaceThingsRows = "rows";       // grid only, int >= 1
+    public const string PlaceThingsCount = "count";     // row only, int >= 1
+    public const string PlaceThingsAxis = "axis";       // row only, "x" (default) | "z"
+    public const string PlaceThingsSpacing = "spacing"; // grid/row, int >= 1, cells between placements
+    public const string PlaceThingsCells = "cells";     // cells only, "0,0; 4,0; 8,-3"
+
+    public const string SetTerrainType = "SetTerrain";
+    public const string SetTerrainWidth = "width";   // int >= 1
+    public const string SetTerrainHeight = "height"; // int >= 1
+
+    public const string LookAtType = "LookAt";
+    public const string LookAtZoom = "zoom"; // float > 0, CameraDriver root size; omit to keep current
+
     // Timelapse is the one composite step: it never reaches the executor, because
     // TimelapseExpander desugars it at load time into a SetTime/Wait/Screenshot triple per frame.
     // See TimelapseExpander for the range semantics and defaults.

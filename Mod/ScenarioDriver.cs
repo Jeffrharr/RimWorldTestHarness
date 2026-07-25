@@ -22,6 +22,9 @@ public static class ScenarioDriver
     // this — those flags are shared with the live driver.
     public static bool Active { get; private set; }
 
+    // Burned after the game reports itself initialized, before the first step runs. See ReadyToRun.
+    private const int PostLoadSettleFrames = 5;
+
     private enum State { WaitingForMap, Running, Done }
 
     private static ScenarioSpec? _spec;
@@ -63,9 +66,13 @@ public static class ScenarioDriver
 
         if (_state == State.WaitingForMap)
         {
-            if (Find.CurrentMap == null)
+            if (!ReadyToRun())
                 return;
             _state = State.Running;
+            // Give the game a few frames after FinalizeInit before the first step observes it. Cheap
+            // insurance on top of the ProgramState gate, reusing the existing flush counter.
+            _flushFramesRemaining = PostLoadSettleFrames;
+            return;
         }
 
         if (_flushFramesRemaining > 0)
@@ -83,6 +90,20 @@ public static class ScenarioDriver
 
         RunNextStep();
     }
+
+    // A non-null CurrentMap is NOT sufficient, which cost a full debugging session to learn.
+    // Game.InitNewGame sets ProgramState.MapInitializing, generates the map (so Find.CurrentMap goes
+    // non-null), and only then calls FinalizeInit, which sets ProgramState.Playing. On the -quicktest
+    // path Root_Play.Update therefore pumps this driver while the new game is still being set up:
+    // steps ran against a half-built map and produced a storm of ArgumentOutOfRangeException out of
+    // Verse.TickList.Tick, with no map ever rendering — and because those are RimWorld's own logged
+    // errors rather than step failures, the run still reported Pass.
+    //
+    // The autostart/fixture path never hit it because Game.LoadGame runs inside a LongEvent, so the
+    // ShouldWaitForEvent guard above covered the same window by accident. ProgramState.Playing is the
+    // real signal, and both InitNewGame and LoadGame funnel through FinalizeInit to set it.
+    private static bool ReadyToRun() =>
+        Current.ProgramState == ProgramState.Playing && Find.CurrentMap != null;
 
     private static void RunNextStep()
     {
@@ -152,7 +173,10 @@ public static class ScenarioDriver
     private static void Finish()
     {
         _state = State.Done;
-        _report!.Pass = ReportComparer.AllPass(_report.ProbeChecks);
+        // Errors count toward Pass, not just probe checks: a scenario whose steps failed verified less
+        // than it claims to, and with no Probe step at all an errors-ignoring gate reports Pass over
+        // an empty check list. See ReportComparer's two-arg overload.
+        _report!.Pass = ReportComparer.AllPass(_report.ProbeChecks, _report.Errors);
         File.WriteAllText(_reportPath!, JsonSerializer.Serialize(_report));
         // Redundant signal alongside the report file itself — Runner/run_test.sh polls for the
         // report's existence primarily, but this gives a human skimming Player.log the same
