@@ -92,7 +92,7 @@ public static class TimelapseExpander
     {
         frames = new List<ScenarioStep>();
 
-        if (!ValidateKnownArgs(args, out error))
+        if (!ArgReader.ValidateKnownArgs(args, KnownArgs, out error))
             return false;
         if (!ReadParameters(args, out TimelapseParameters p, out error))
             return false;
@@ -101,24 +101,6 @@ public static class TimelapseExpander
 
         for (int i = 0; i < count; i++)
             AddFrame(frames, p, i);
-
-        error = null;
-        return true;
-    }
-
-    // Unknown keys are rejected rather than ignored: Args is an ordinary case-sensitive dictionary,
-    // so a "stephours" typo would otherwise silently fall back to the default and produce a
-    // plausible-looking but wrong video — the worst kind of failure for a verification tool.
-    private static bool ValidateKnownArgs(IReadOnlyDictionary<string, string> args, out string? error)
-    {
-        foreach (KeyValuePair<string, string> arg in args)
-        {
-            if (Array.IndexOf(KnownArgs, arg.Key) < 0)
-            {
-                error = $"unknown arg '{arg.Key}' (expected one of: {string.Join(", ", KnownArgs)})";
-                return false;
-            }
-        }
 
         error = null;
         return true;
@@ -140,23 +122,21 @@ public static class TimelapseExpander
     {
         p = default;
 
-        if (!ReadDouble(args, StepArgs.TimelapseFromHour, DefaultFromHour, out p.FromHour, out error))
+        if (!ArgReader.TryReadDouble(args, StepArgs.TimelapseFromHour, DefaultFromHour, out p.FromHour, out error))
             return false;
-        if (!ReadDouble(args, StepArgs.TimelapseToHour, DefaultToHour, out p.ToHour, out error))
+        if (!ArgReader.TryReadDouble(args, StepArgs.TimelapseToHour, DefaultToHour, out p.ToHour, out error))
             return false;
-        if (!ReadDouble(args, StepArgs.TimelapseStepHours, DefaultStepHours, out p.StepHours, out error))
+        if (!ArgReader.TryReadDouble(args, StepArgs.TimelapseStepHours, DefaultStepHours, out p.StepHours, out error))
             return false;
-        if (!ReadInt(args, StepArgs.TimelapseSettleFrames, DefaultSettleFrames, out p.SettleFrames, out error))
+        if (!ArgReader.TryReadInt(args, StepArgs.TimelapseSettleFrames, DefaultSettleFrames, out p.SettleFrames, out error))
             return false;
         // Read only to validate it here; fps is consumed by Runner/run_test.sh when it stitches the
         // frames, not by any step. Validating it at load time means a bad value fails the scenario
         // up front instead of after the run has spent minutes producing frames.
-        if (!ReadInt(args, StepArgs.TimelapseFps, DefaultFps, out int fps, out error))
+        if (!ArgReader.TryReadInt(args, StepArgs.TimelapseFps, DefaultFps, out int fps, out error))
             return false;
 
-        p.FileNamePrefix = args.TryGetValue(StepArgs.TimelapseFileNamePrefix, out string? prefix)
-            ? prefix
-            : DefaultFileNamePrefix;
+        p.FileNamePrefix = ArgReader.ReadString(args, StepArgs.TimelapseFileNamePrefix, DefaultFileNamePrefix);
 
         return ValidateParameters(p, fps, out error);
     }
@@ -235,7 +215,7 @@ public static class TimelapseExpander
         into.Add(Step(StepArgs.SetTimeType, StepArgs.SetTimeHour, Format(hour)));
 
         if (p.SettleFrames > 0)
-            into.Add(Step(StepArgs.WaitType, StepArgs.WaitFrames, p.SettleFrames.ToString(CultureInfo.InvariantCulture)));
+            into.Add(Step(StepArgs.WaitType, StepArgs.WaitFrames, ArgReader.Format(p.SettleFrames)));
 
         // Zero-padded and fixed-width so the frames sort correctly and ffmpeg's %04d pattern picks
         // them up as a sequence.
@@ -252,49 +232,7 @@ public static class TimelapseExpander
             Args = new Dictionary<string, string> { { argKey, argValue } },
         };
 
-    // Invariant culture throughout: a scenario file is data that has to read the same on any
-    // machine, and the executor parses these strings straight back out.
-    private static string Format(double value) => value.ToString("0.####", CultureInfo.InvariantCulture);
-
-    private static bool ReadDouble(
-        IReadOnlyDictionary<string, string> args, string key, double fallback,
-        out double value, out string? error)
-    {
-        if (!args.TryGetValue(key, out string? raw))
-        {
-            value = fallback;
-            error = null;
-            return true;
-        }
-
-        if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
-        {
-            error = $"'{key}' is not a number (got '{raw}')";
-            return false;
-        }
-
-        error = null;
-        return true;
-    }
-
-    private static bool ReadInt(
-        IReadOnlyDictionary<string, string> args, string key, int fallback,
-        out int value, out string? error)
-    {
-        if (!args.TryGetValue(key, out string? raw))
-        {
-            value = fallback;
-            error = null;
-            return true;
-        }
-
-        if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
-        {
-            error = $"'{key}' is not a whole number (got '{raw}')";
-            return false;
-        }
-
-        error = null;
-        return true;
-    }
+    // Invariant culture throughout (see ArgReader): a scenario file is data that has to read the
+    // same on any machine, and the executor parses these strings straight back out.
+    private static string Format(double value) => ArgReader.Format(value);
 }
