@@ -47,27 +47,64 @@ public static class SceneBuilder
         Rot4 rot = Rot4.FromString(plan.Rotation);
 
         List<string> refused = new List<string>();
+        ClearTally tally = new ClearTally();
+        List<string> blockersHere = new List<string>();
         int placed = 0;
 
         foreach (ScenePlacement placement in plan.Cells)
         {
             IntVec3 cell = anchor + new IntVec3(placement.Dx, 0, placement.Dz);
+
+            // Reused across cells rather than allocated per cell: a 512-placement grid would otherwise
+            // churn 512 lists for a case that is almost always empty.
+            blockersHere.Clear();
+
+            // Clearing runs BEFORE TrySpawnOne, and TrySpawnOne's CanSpawnAt check is then re-run
+            // rather than skipped. That ordering is the whole point: CanSpawnAt fails on
+            // !c.Walkable(map), so a *mineable* — and therefore destroyable — rock wall refuses a
+            // placement even though clearing can remove it. Skipping the re-check instead would turn
+            // genuinely impossible cells (deep water, an indestructible edifice) into silent successes.
+            PrepareCell(map, cell, plan.Clear, tally, blockersHere);
+
             if (TrySpawnOne(def, stuff, cell, rot, map, out string? reason))
                 placed++;
             else
-                refused.Add($"({cell.x},{cell.z}) {reason}");
+                refused.Add($"({cell.x},{cell.z}) {reason}{SceneClearing.RefusalDetail(blockersHere)}");
         }
 
         if (plan.Unfog)
             Unfog(map);
 
+        return JoinProblems(
+            ShortfallError(placed, plan.Cells.Count, def.defName, refused),
+            ReportClearing(StepArgs.PlaceThingsType, plan.Clear, tally));
+    }
+
+    // Every refused cell is listed rather than just counted, because "which cells" is what tells a
+    // scenario author whether their anchor is wrong or the terrain is.
+    private static string? ShortfallError(int placed, int wanted, string defName, List<string> refused)
+    {
         if (refused.Count == 0)
             return null;
 
-        // Every refused cell is listed rather than just counted, because "which cells" is what tells
-        // a scenario author whether their anchor is wrong or the terrain is.
-        return $"placed {placed} of {plan.Cells.Count} {def.defName} — " +
+        return $"placed {placed} of {wanted} {defName} — " +
                $"{refused.Count} refused: {string.Join(", ", refused)}";
+    }
+
+    // A step can fail in two independent ways once clearing exists — cells refused a thing, and
+    // clearing couldn't remove a blocker — and reporting only the first would hide the second. Both
+    // are surfaced, joined, because a run that mentions one problem while sitting on another is the
+    // same false-confidence failure as a run that mentions none.
+    private static string? JoinProblems(params string?[] problems)
+    {
+        List<string> present = new List<string>();
+        foreach (string? problem in problems)
+        {
+            if (problem != null)
+                present.Add(problem);
+        }
+
+        return present.Count == 0 ? null : string.Join("; ", present);
     }
 
     private static bool TrySpawnOne(
@@ -87,7 +124,11 @@ public static class SceneBuilder
         // indestructible blockers; canWipeEdifices defaults to true, matching WipeMode.Vanish below.
         if (!GenSpawn.CanSpawnAt(def, cell, map, rot))
         {
-            reason = "terrain or an indestructible blocker refuses it";
+            // The terrain def is named even though it's only one of the reasons CanSpawnAt can refuse,
+            // because it's the one a report otherwise can't convey at all — "(128,118) refused" leaves
+            // the author guessing, "(128,118) ... terrain 'WaterDeep'" ends the investigation.
+            reason = "terrain or an indestructible blocker refuses it " +
+                     $"(terrain '{map.terrainGrid.TerrainAt(cell).defName}')";
             return false;
         }
 
@@ -163,6 +204,116 @@ public static class SceneBuilder
         return true;
     }
 
+    // ----- clearing ---------------------------------------------------------------------------
+
+    // Inspects one footprint cell and, when the step asked for it, clears it. Shared by PlaceThings'
+    // placement cells and every cell of SetTerrain's rect, so the two steps can't drift on what
+    // "clear" means. All the branching lives in Shared/SceneClearing.Classify; this is the Verse half.
+    //
+    // Called for every cell whether clearing was asked for or not, because the roofed-cell count is
+    // what lets ReportClearing warn about a roofed footprint the scenario forgot to clear.
+    private static void PrepareCell(
+        Map map, IntVec3 cell, bool clear, ClearTally tally, List<string> blockersHere)
+    {
+        if (!cell.InBounds(map))
+            return;
+
+        tally.Cells++;
+        if (map.roofGrid.RoofAt(cell) != null)
+            tally.RoofedCells++;
+
+        if (clear)
+        {
+            DestroyThingsIn(map, cell, tally, blockersHere);
+            StripRoof(map, cell);
+        }
+    }
+
+    // The thing list is SNAPSHOTTED first. GetThingList hands back the map's own live thingGrid list,
+    // and Thing.Destroy despawns — mutating that very list mid-iteration, which would skip things or
+    // throw. Copying is cheap next to the destroys it guards.
+    private static void DestroyThingsIn(
+        Map map, IntVec3 cell, ClearTally tally, List<string> blockersHere)
+    {
+        List<Thing> present = new List<Thing>(cell.GetThingList(map));
+        foreach (Thing thing in present)
+            ApplyVerdict(thing, cell, tally, blockersHere);
+    }
+
+    private static void ApplyVerdict(
+        Thing thing, IntVec3 cell, ClearTally tally, List<string> blockersHere)
+    {
+        // A multi-cell building destroyed while clearing an earlier cell is still present in this
+        // cell's snapshot, and Thing.Destroy Log.Errors on an already-destroyed thing.
+        if (thing.Destroyed)
+            return;
+
+        ClearVerdict verdict = SceneClearing.Classify(
+            thing.def.category.ToString(), thing.def.destroyable, out string? reason);
+
+        switch (verdict)
+        {
+            case ClearVerdict.Destroy:
+                // DestroyMode.Vanish, not KillFinalize: mining a granite wall the vanilla way drops
+                // chunks, which would put new blockers into the footprint we just cleared. Vanish
+                // leaves nothing behind (GenLeaving.DoLeavingsFor no-ops for it).
+                thing.Destroy(DestroyMode.Vanish);
+                tally.ThingsDestroyed++;
+                break;
+            case ClearVerdict.Blocked:
+                tally.Blocked.Add($"({cell.x},{cell.z}) {thing.def.defName} — {reason}");
+                blockersHere.Add($"{thing.def.defName} ({reason})");
+                break;
+            default:
+                tally.Left.Add($"({cell.x},{cell.z}) {thing.def.defName} — {reason}");
+                break;
+        }
+    }
+
+    // Roof is stripped even where the cell held nothing: overhead mountain roof lives in its own grid
+    // and SURVIVES the rock under it being destroyed. That matters more than the placement shortfall
+    // that motivated clearing — a roofed cell is darkened, and these scenes exist to be photographed
+    // for their lighting, so a pad half under mountain is wrong for the exact thing being measured.
+    //
+    // SetRoof is the direct write rather than vanilla's collapse-checked removal path. A harness scene
+    // is torn down with the process (nothing is ever saved), so an unsupported neighbouring roof slab
+    // never gets a chance to matter — and a collapse mid-setup would drop rubble into the footprint.
+    // SetRoof no-ops when the cell is already unroofed, so this needs no guard of its own.
+    private static void StripRoof(Map map, IntVec3 cell)
+    {
+        map.roofGrid.SetRoof(cell, null);
+    }
+
+    // Says what clearing did — and, just as importantly, says something when it was NOT asked for and
+    // the footprint was roofed anyway. Terrain paints and pillars stand perfectly well under overhead
+    // mountain; the only symptom is a screenshot that is wrong for the lighting the scenario set out to
+    // show. Staying quiet there is exactly the plausible-but-wrong result this harness exists to catch,
+    // so it's a Log.Warning rather than nothing — but not a step failure, because a scenario is allowed
+    // to want a roofed scene, and turning that into a red run would break existing specs.
+    private static string? ReportClearing(string step, bool clear, ClearTally tally)
+    {
+        if (!clear)
+        {
+            if (tally.RoofedCells > 0)
+                Log.Warning(
+                    $"RWTH: {step} built into {tally.RoofedCells} of {tally.Cells} footprint cells that " +
+                    $"carry roof — overhead roof darkens them, so lighting screenshots of this scene are " +
+                    $"not of open sky. Set \"{StepArgs.SceneClear}\": \"true\" if that isn't intended.");
+
+            return null;
+        }
+
+        Log.Message($"RWTH: {step} {SceneClearing.Describe(tally)}");
+
+        // Spared things are logged, never failed: a pawn wandering onto the pad is a fact about the
+        // colony, not a defect in the scene, and failing on it would make runs nondeterministic.
+        if (tally.Left.Count > 0)
+            Log.Message($"RWTH: {step} left {tally.Left.Count} thing(s) in place: " +
+                        $"{SceneClearing.FormatList(tally.Left)}");
+
+        return SceneClearing.BlockedError(tally);
+    }
+
     // ----- fog --------------------------------------------------------------------------------
 
     // Lifts fog across the whole map, not just the built footprint. Deliberate: a shadow falls well
@@ -194,11 +345,22 @@ public static class SceneBuilder
 
         int painted = 0;
         int outOfBounds = 0;
+        ClearTally tally = new ClearTally();
+
+        // Never read back here — SetTerrain has no per-cell verdict to enrich, unlike PlaceThings'
+        // refused cells — but PrepareCell needs somewhere to put per-cell blockers. The whole-step
+        // tally.Blocked list is what the gate at the bottom reads.
+        List<string> blockersHere = new List<string>();
 
         foreach (IntVec3 cell in rect)
         {
             if (cell.InBounds(map))
             {
+                blockersHere.Clear();
+
+                // Cleared before painting, so the paint wins: destroying a floor-bearing building can
+                // reset the terrain under it, which would undo a repaint done the other way round.
+                PrepareCell(map, cell, plan.Clear, tally, blockersHere);
                 map.terrainGrid.SetTerrain(cell, def);
                 painted++;
             }
@@ -220,7 +382,7 @@ public static class SceneBuilder
         if (outOfBounds > 0)
             Log.Message($"RWTH: SetTerrain painted {painted} cells, {outOfBounds} were out of bounds");
 
-        return null;
+        return ReportClearing(StepArgs.SetTerrainType, plan.Clear, tally);
     }
 
     // ----- LookAt -----------------------------------------------------------------------------

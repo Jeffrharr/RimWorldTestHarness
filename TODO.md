@@ -39,12 +39,16 @@ The current fixture is whatever save happened to be newest — heavy, tied to th
 active mod list, and not something a fresh checkout can regenerate. Directions to make the
 fixture story self-serve instead of manual:
 
-- [ ] **Quickstart / no-fixture mode** — the two blockers that made this unusable are **fixed and
-  confirmed live** (2026-07-24, four runs). What remains is tracked in
-  [#4](https://github.com/Jeffrharr/RimWorldTestHarness/issues/4): a generated colony often has rock in
-  the target area, so a run reports e.g. `placed 12 of 16 Wall — 4 refused`, and mountain cells carry
-  overhead roof that darkens exactly the ground a lighting scenario cares about. Scene setup needs to
-  clear things and roof from its footprint before this path can host a visual scenario.
+- [ ] **Quickstart / no-fixture mode** — the three blockers that made this unusable are all
+  implemented. The first two are **confirmed live** (2026-07-24, four runs); the third
+  ([#4](https://github.com/Jeffrharr/RimWorldTestHarness/issues/4), the `clear` arg) is **offline-tested
+  only and still needs a live run**. What to check when it gets one: a `-quicktest` scenario with
+  `"clear": "true"` on both `SetTerrain` and `PlaceThings` should place every pillar, and the pad should
+  read as open sky rather than carrying the darker patch of a surviving overhead-mountain region. Worth
+  confirming from Player.log at the same time that a run *without* `clear` emits the roofed-footprint
+  `Log.Warning`, because that warning is the only thing standing between a forgotten `clear` and a green
+  run over a wrongly-lit screenshot. Note there is still no committed quickstart scenario — the run in
+  \#4 used an ad-hoc one — which is the remaining piece of this item.
 
   What was fixed:
   - `ScenarioDriver` waited only for `Find.CurrentMap != null`, which goes true partway through
@@ -56,6 +60,14 @@ fixture story self-serve instead of manual:
   - Map centre on a fresh colony is fogged, and RimWorld draws neither terrain nor things in fogged
     cells — so the scene built correctly and was invisible, with every step reporting success. Scene
     steps now lift fog by default (`unfog`).
+  - A generated colony often has rock where the scenario wants its pad (`placed 12 of 16 Wall —
+    4 refused`), and mountain cells carry overhead roof that darkens exactly the ground a lighting
+    scenario cares about — silently, since terrain and pillars go in perfectly well underneath it.
+    `PlaceThings`/`SetTerrain` now take `clear`, which destroys the destroyable things in the footprint
+    and strips its roof. Opt-in (not opt-out like `unfog`) because clearing deletes map content and the
+    same cores are reachable from a dev action pointed at a real colony; a roofed footprint still
+    `Log.Warning`s when `clear` was omitted, so the safe default buys no silence. See `DESIGN.md`,
+    "Clearing the footprint is opt-in".
 
   Original rationale, still valid (lightest — for when the colony doesn't matter): for
   lighting scenarios the specific colony is irrelevant: `Patch_ForcedLatitude` already overrides

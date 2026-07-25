@@ -292,6 +292,46 @@ across the whole map rather than the built footprint, because a shadow falls wel
 caster occupies, and at a low sun it falls a long way. Nothing is ever saved, so there is no lasting
 effect on a colony.
 
+### Clearing the footprint is opt-in, but a roofed footprint is never silent
+
+A generated colony frequently has rock where a scenario wants its pad, which showed up on the
+`-quicktest` path as `placed 12 of 16 Wall — 4 refused`. The `clear` arg (`PlaceThings`, `SetTerrain`)
+destroys the destroyable things in the step's footprint and strips its roof. Three decisions in it:
+
+- **Roof matters more than placement.** Overhead mountain roof lives in `Map.roofGrid` and *survives*
+  the rock beneath it being destroyed, and it darkens the cell. Since these scenes exist to be
+  photographed for their lighting, a pad half under mountain is wrong for the exact quantity being
+  measured — worse than a few missing pillars, because nothing about it looks broken. So `clear`
+  strips roof from every footprint cell, including cells that held nothing. `SetTerrain` clears its
+  whole rect for the same reason: shadows fall on the pad, not only on the cells with pillars.
+- **Clearing runs before `CanSpawnAt`, which is then re-run rather than skipped.** `CanSpawnAt` fails
+  on `!c.Walkable(map)`, so a *mineable* — therefore destroyable — rock wall refuses a placement that
+  clearing could have made possible. Re-running the check is what keeps genuinely impossible cells
+  (deep water, an indestructible edifice) from turning into silent successes.
+- **It defaults to `false`, unlike `unfog`.** Lifting fog changes what is drawn; clearing permanently
+  deletes map content. `SceneBuilder`'s cores are also reachable from the "Place shadow-caster grid"
+  `[DebugAction]`, which `DevActionCatalog` discovers and the live companion channel can invoke against
+  a real player's colony — a default-on clear would be one invoke from bulldozing part of someone's
+  base with no undo. The safety argument only works because the *unsafe* direction can't hide: a
+  rock-blocked footprint already fails loudly (`PlaceThings` reports every refused cell), so choosing
+  the conservative default costs no verification.
+
+That last point leaves one gap, and it's plugged rather than accepted: terrain paints and pillars stand
+perfectly well under overhead roof, so a scenario that *forgot* `clear` would produce a wrongly-lit
+scene with nothing to show for it. Every scene step therefore counts roofed cells in its footprint
+whether or not it was asked to clear them, and `Log.Warning`s when it built into roof without clearing.
+A warning, not a step failure — a scenario is allowed to want a roofed scene — but never silence.
+
+`Shared/SceneClearing.cs` holds the policy: which `ThingCategory` values may be destroyed
+(`Building`/`Plant`/`Item`/`Filth` — a whitelist, so a category a future RimWorld adds is spared rather
+than bulldozed), and three verdicts. `Destroy`, `Leave` (pawns are never destroyed: a colonist can
+wander onto the pad, so destroying one would make runs destructive *and* nondeterministic, and a pawn
+is passable so leaving it costs the scene nothing), and `Blocked` — a thing that occupies the footprint
+and cannot be removed, which **fails the step**. Categories cross the pure/adapter boundary as the
+enum's own member *names*, so the adapter does no branching at all and cannot drift from the table;
+`ApiCompatibilityTests` pins those names, since a rename would otherwise quietly turn a category into
+"leave alone" and clearing would stop clearing while still reporting success.
+
 Two further consequences worth knowing. `PlaceThings` spawns with `WipeMode.Vanish`, which destroys whatever
 occupies the footprint; that's acceptable in a batch run (the fixture is restored by the runner and
 the game is never saved) and is exactly why these three verbs are kept off the live companion channel,

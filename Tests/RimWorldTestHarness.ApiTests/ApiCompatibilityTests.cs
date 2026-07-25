@@ -647,6 +647,152 @@ public class ApiCompatibilityTests
             "Game.FinalizeInit() no longer exists — it is what sets ProgramState.Playing, which the readiness gate waits for");
     }
 
+    // --- Scene clearing (Mod/SceneBuilder.cs's PrepareCell / DestroyThingsIn / StripRoof) ---
+    //
+    // The `clear` arg's whole job is removing what shouldn't be in a scene's footprint, and every
+    // member below fails QUIETLY if it moves: a missing roof strip leaves a darkened pad that still
+    // screenshots and still passes, and a missing category/destroyable read would make the policy in
+    // Shared/SceneClearing.cs classify every thing the same way.
+
+    [Test]
+    public void Map_roofGrid_FieldExists()
+    {
+        var type = GetType(_game, "Verse.Map");
+        Assert.That(type, Is.Not.Null);
+        var field = type!.Fields.SingleOrDefault(f => f.Name == "roofGrid");
+        Assert.That(field, Is.Not.Null,
+            "Map.roofGrid no longer exists — SceneBuilder.StripRoof can't clear overhead mountain roof, and a roofed pad is darkened for exactly the lighting a scenario photographs");
+        Assert.That(field!.FieldType.FullName, Is.EqualTo("Verse.RoofGrid"),
+            "Map.roofGrid changed type — SceneBuilder's roof clearing would stop compiling");
+    }
+
+    // SetRoof(cell, null) is the direct write; SceneBuilder deliberately bypasses vanilla's
+    // collapse-checked removal path, so this exact overload is what it depends on.
+    [Test]
+    public void RoofGrid_SetRoofAndRoofAt_Exist()
+    {
+        var type = GetType(_game, "Verse.RoofGrid");
+        Assert.That(type, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            Assert.That(
+                type!.Methods.SingleOrDefault(m =>
+                    m.Name == "SetRoof" && m.Parameters.Count == 2 &&
+                    m.Parameters[0].ParameterType.FullName == "Verse.IntVec3" &&
+                    m.Parameters[1].ParameterType.FullName == "Verse.RoofDef"),
+                Is.Not.Null,
+                "RoofGrid.SetRoof(IntVec3, RoofDef) no longer exists — SceneBuilder.StripRoof can't clear roof");
+            var roofAt = type!.Methods.SingleOrDefault(m =>
+                m.Name == "RoofAt" && m.Parameters.Count == 1 &&
+                m.Parameters[0].ParameterType.FullName == "Verse.IntVec3");
+            Assert.That(roofAt, Is.Not.Null,
+                "RoofGrid.RoofAt(IntVec3) no longer exists — SceneBuilder can't count roofed footprint cells, so the roofed-footprint warning goes silent");
+            Assert.That(roofAt!.ReturnType.FullName, Is.EqualTo("Verse.RoofDef"),
+                "RoofGrid.RoofAt(IntVec3) no longer returns RoofDef — SceneBuilder's null test for 'unroofed' would stop meaning that");
+        });
+    }
+
+    [Test]
+    public void GridsUtility_GetThingList_Exists()
+    {
+        var type = GetType(_game, "Verse.GridsUtility");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "GetThingList" &&
+            m.Parameters.Count == 2 &&
+            m.Parameters[0].ParameterType.FullName == "Verse.IntVec3" &&
+            m.Parameters[1].ParameterType.FullName == "Verse.Map");
+        Assert.That(method, Is.Not.Null,
+            "GridsUtility.GetThingList(IntVec3, Map) no longer exists — SceneBuilder can't enumerate what stands in a footprint cell");
+        Assert.That(method!.ReturnType.FullName, Is.EqualTo("System.Collections.Generic.List`1<Verse.Thing>"),
+            "GetThingList no longer returns List<Thing> — SceneBuilder snapshots that list before destroying, because Destroy mutates the live thingGrid list it hands back");
+    }
+
+    [Test]
+    public void Thing_DestroyAndDestroyed_Exist()
+    {
+        var type = GetType(_game, "Verse.Thing");
+        Assert.That(type, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            Assert.That(
+                type!.Methods.SingleOrDefault(m =>
+                    m.Name == "Destroy" && m.Parameters.Count == 1 &&
+                    m.Parameters[0].ParameterType.FullName == "Verse.DestroyMode"),
+                Is.Not.Null,
+                "Thing.Destroy(DestroyMode) no longer exists — scene clearing can't remove rock, plants or buildings from a footprint");
+            // Checked before every destroy: a multi-cell building destroyed while clearing an earlier
+            // cell is still in the next cell's snapshot, and Destroy Log.Errors on an already-destroyed
+            // thing. Without this the run would spew errors it never reports.
+            Assert.That(type!.Properties.SingleOrDefault(p => p.Name == "Destroyed")?.GetMethod, Is.Not.Null,
+                "Thing.Destroyed no longer exists — SceneBuilder would double-destroy multi-cell things and Log.Error doing it");
+        });
+    }
+
+    [Test]
+    public void DestroyMode_VanishMemberExists()
+    {
+        var type = GetType(_game, "Verse.DestroyMode");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(type!.Fields.SingleOrDefault(f => f.Name == "Vanish"), Is.Not.Null,
+            "Verse.DestroyMode.Vanish no longer exists — clearing would have to use a mode that drops leavings, putting fresh chunks into the footprint it just cleared");
+    }
+
+    // Shared/SceneClearing.cs decides what may be destroyed from these two members alone, so a rename
+    // of either would silently collapse the whole policy into one branch.
+    [Test]
+    public void ThingDef_CategoryAndDestroyable_Exist()
+    {
+        var type = GetType(_game, "Verse.ThingDef");
+        Assert.That(type, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            var category = type!.Fields.SingleOrDefault(f => f.Name == "category");
+            Assert.That(category, Is.Not.Null,
+                "ThingDef.category no longer exists — SceneClearing.Classify can't tell a rock wall from a pawn");
+            Assert.That(category!.FieldType.FullName, Is.EqualTo("Verse.ThingCategory"),
+                "ThingDef.category changed type — SceneBuilder passes its ToString() to SceneClearing's category table");
+            var destroyable = type.Fields.SingleOrDefault(f => f.Name == "destroyable");
+            Assert.That(destroyable, Is.Not.Null,
+                "ThingDef.destroyable no longer exists — clearing would call Destroy on non-destroyable things, which Log.Errors instead of reporting a blocker");
+            Assert.That(destroyable!.FieldType.FullName, Is.EqualTo("System.Boolean"),
+                "ThingDef.destroyable is no longer a bool — SceneClearing.Classify's second argument would stop binding");
+        });
+    }
+
+    // SceneClearing keeps its clearable-category whitelist as the enum's member NAMES, so the adapter
+    // does no branching and can't drift from the table. That trade only holds if the names hold: a
+    // rename would turn the renamed category into "leave alone" and clearing would quietly stop
+    // clearing it.
+    [Test]
+    public void ThingCategory_MembersNamedBySceneClearingExist()
+    {
+        var type = GetType(_game, "Verse.ThingCategory");
+        Assert.That(type, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            foreach (var member in new[] { "Pawn", "Building", "Plant", "Item", "Filth" })
+                Assert.That(type!.Fields.SingleOrDefault(f => f.Name == member), Is.Not.Null,
+                    $"ThingCategory.{member} no longer exists — Shared/SceneClearing.cs names it as a string, so clearing would silently spare that category");
+        });
+    }
+
+    // Named in a refused-cell report, so "(128,118) refused" becomes something an author can act on.
+    [Test]
+    public void TerrainGrid_TerrainAt_CellOverloadExists()
+    {
+        var type = GetType(_game, "Verse.TerrainGrid");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "TerrainAt" &&
+            m.Parameters.Count == 1 &&
+            m.Parameters[0].ParameterType.FullName == "Verse.IntVec3");
+        Assert.That(method, Is.Not.Null,
+            "TerrainGrid.TerrainAt(IntVec3) no longer exists — SceneBuilder can't name the terrain that refused a placement");
+        Assert.That(method!.ReturnType.FullName, Is.EqualTo("Verse.TerrainDef"),
+            "TerrainGrid.TerrainAt(IntVec3) no longer returns TerrainDef — the refusal message's defName read would stop compiling");
+    }
+
     [Test]
     public void TerrainGrid_SetTerrain_Exists()
     {
