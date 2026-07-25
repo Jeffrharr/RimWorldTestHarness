@@ -34,6 +34,18 @@ public static class StepArgs
     public const string WaitType = "Wait";
     public const string WaitFrames = "frames"; // int >= 0, rendered frames to idle before the next step
 
+    // Starts a vanilla GameCondition on the current map so scenarios can exercise condition-driven
+    // effects (solar flare, eclipse, ...) that no clock/latitude jump can produce. The condition is
+    // registered live; a FastForward step after it lets any fade-in elapse before a probe/screenshot.
+    public const string StartConditionType = "StartCondition";
+    public const string StartConditionDef = "conditionDef";     // GameConditionDef defName (e.g. "SolarFlare", "Eclipse")
+    public const string StartConditionDurationHours = "durationHours"; // float, default 24; <=0 => permanent
+    // Back-dates the condition's startTick so it is "born aged": TicksPassed is immediately this many
+    // in-game hours, letting a fade-in (e.g. the aurora tint's ~1h ramp) read as already complete
+    // without needing real ticks to elapse (FastForward can't advance a scenario-paused clock). float,
+    // default 0.
+    public const string StartConditionAgedHours = "agedHours";
+
     // Scene setup. Shared by PlaceThings/SetTerrain/LookAt because all three answer "where on the
     // map?" the same way, and a scenario author shouldn't have to remember three spellings of it.
     // Anchors and offsets are whole cells; see SceneLayout for the grammar and SceneBuilder for how

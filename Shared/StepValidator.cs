@@ -30,6 +30,7 @@ public static class StepValidator
         StepArgs.ScreenshotType,
         StepArgs.SetFeatureType,
         StepArgs.WaitType,
+        StepArgs.StartConditionType,
         StepArgs.PlaceThingsType,
         StepArgs.SetTerrainType,
         StepArgs.LookAtType,
