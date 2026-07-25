@@ -299,8 +299,26 @@ fi
 
 # Separate check: the lock only sees other runs of this script, not a RimWorld the user launched from
 # Steam. We must not kill that (the old code did, via pkill), so we bow out instead.
-if pgrep -x RimWorldLinux >/dev/null 2>&1; then
-    fail "a RimWorldLinux process is already running — close it first. This run will not kill it (it may be your game, or another agent's run)."
+#
+# Zombies do not count as running. A RimWorld launched from RimSort (or any parent that doesn't reap
+# its children promptly) leaves a <defunct> entry behind after the game has fully exited, and a bare
+# `pgrep -x` matches it — which blocks every run until the *launcher* is closed, reporting that a game
+# is still open when it isn't. A zombie holds no window, no GPU context and no config lock, so there is
+# nothing here to protect: it is already dead, and cannot be killed anyway. This is the same
+# alive-vs-matching distinction rimworld_alive() further down had to make for a different reason.
+live_rimworld_pids() {
+    local pid state
+    for pid in $(pgrep -x RimWorldLinux 2>/dev/null); do
+        # Empty state == it exited between pgrep and here; Z* == zombie. Neither one is alive.
+        state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+        if [[ -n "$state" && "$state" != Z* ]]; then
+            echo "$pid"
+        fi
+    done
+}
+LIVE_RIMWORLD="$(live_rimworld_pids | tr '\n' ' ')"
+if [[ -n "${LIVE_RIMWORLD// /}" ]]; then
+    fail "a RimWorldLinux process is already running (PID(s): ${LIVE_RIMWORLD%% }) — close it first. This run will not kill it (it may be your game, or another agent's run)."
 fi
 
 # One save source per run: it is installed once at boot as autostart.rws, and the mid-suite reload
