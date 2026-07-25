@@ -23,13 +23,20 @@
 #      run created (unless --no-teardown).
 #
 # Usage:
-#   ./run_test.sh <path/to/scenario.json> [--no-teardown]
+#   ./run_test.sh <path/to/scenario.json> [--no-teardown] [--delete-frames] [--print-config]
 #
 # Notes:
-#   - Kill signal for RimWorldLinux: pkill -9 -x RimWorldLinux is safe; do NOT use -f (it matches
-#     the shell's own command line).
-#   - This kills/relaunches RimWorldLinux and temporarily swaps ModsConfig.xml/Saves/autostart.rws
-#     (both backed up and restored) — same blast radius as MissileGirl/TestMods/run_test.sh.
+#   - This run only ever signals the RimWorldLinux process IT started, by PID (SIGTERM, escalating to
+#     SIGKILL). It deliberately does NOT pkill by name: a second instance — another agent's run, or
+#     the user just playing — must survive us. (If a name-based kill is ever reintroduced, note that
+#     -x is required and -f is wrong: -f matches this script's own command line.)
+#   - Instead of killing strays, the run refuses to start while any RimWorldLinux is alive, and takes
+#     an exclusive flock so two runs cannot overlap. See "Run guard" below.
+#   - Everything mutable this run owns (backups, Player.log, stderr) lives under one per-run scratch
+#     directory, so overlapping runs cannot restore each other's backup over the real config.
+#   - This still relaunches RimWorldLinux and temporarily swaps the real
+#     ModsConfig.xml/Saves/autostart.rws (both backed up and restored) unless RWTH_ISOLATE_SAVEDATA=1
+#     — same blast radius as MissileGirl/TestMods/run_test.sh.
 
 set -euo pipefail
 
@@ -38,14 +45,47 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 RIMWORLD="/home/deck/.local/share/Steam/steamapps/common/RimWorld"
 MODS_DIR="$RIMWORLD/Mods"
-CONFIG_DIR="/home/deck/.config/unity3d/Ludeon Studios/RimWorld by Ludeon Studios"
-PLAYER_LOG="$CONFIG_DIR/Player.log"
+
+# Per-run scratch. Every mutable file this run owns hangs off here. The old fixed /tmp names
+# (/tmp/ModsConfig_rwth.bak.xml etc.) were a correctness bug even without deliberate parallelism: two
+# overlapping runs shared one backup, so whichever finished last restored the other's snapshot over
+# the user's real ModsConfig.xml. $$ makes this unique per invocation even within the same second.
+RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
+RUN_TMP_DIR="${RWTH_RUN_TMP_DIR:-${TMPDIR:-/tmp}/rwth-run-$RUN_ID}"
+
+# The game's save-data root (holds Config/ModsConfig.xml, Saves/, Screenshots/). Single overridable
+# variable; the default is exactly what this script has always used, so behaviour is unchanged.
+REAL_CONFIG_DIR="${RWTH_CONFIG_DIR:-/home/deck/.config/unity3d/Ludeon Studios/RimWorld by Ludeon Studios}"
+
+# OPT-IN, OFF BY DEFAULT: RWTH_ISOLATE_SAVEDATA=1 gives the run its own save-data root instead of
+# mutating the user's. This uses RimWorld's OWN -savedatafolder= command-line arg
+# (Verse.GenFilePaths.SaveDataFolderPath checks GenCommandLine.TryGetCommandLineArg("savedatafolder")
+# and, when set, uses it verbatim in place of Application.persistentDataPath) — not $XDG_CONFIG_HOME,
+# which we could not prove this Unity build honours. Because the arg is first-party and logs
+# "Save data folder overridden to <path>", the run can and does assert afterwards that the game
+# actually used our directory (assert_savedata_folder below) rather than silently hoping.
+# Still opt-in because a fresh root is a behaviour change a live run has to validate: RimWorld sees
+# no Screenshots/, an unfamiliar Saves/, and only the Config/ we seed in.
+ISOLATE_SAVEDATA="${RWTH_ISOLATE_SAVEDATA:-0}"
+if [[ "$ISOLATE_SAVEDATA" == "1" ]]; then
+    CONFIG_DIR="$RUN_TMP_DIR/savedata"
+else
+    CONFIG_DIR="$REAL_CONFIG_DIR"
+fi
+
+# Player.log moves into the run's scratch dir too. It has to: the script greps it for "RWTH: harness
+# loaded" / "RWTH: scenario complete", and a shared log means one run reads another's markers. Unity's
+# -logfile (already passed at launch) is what makes this a one-line change.
+PLAYER_LOG="$RUN_TMP_DIR/Player.log"
 MODSCONFIG="$CONFIG_DIR/Config/ModsConfig.xml"
-MODSCONFIG_BAK="/tmp/ModsConfig_rwth.bak.xml"
+MODSCONFIG_BAK="$RUN_TMP_DIR/ModsConfig.bak.xml"
 SAVES_DIR="$CONFIG_DIR/Saves"
 AUTOSTART_SAVE="$SAVES_DIR/autostart.rws"
-AUTOSTART_BAK="/tmp/autostart_rwth.bak.rws"
-RIMWORLD_STDERR="/tmp/rimworld_rwth_stderr.log"
+AUTOSTART_BAK="$RUN_TMP_DIR/autostart.bak.rws"
+RIMWORLD_STDERR="$RUN_TMP_DIR/rimworld_stderr.log"
+
+# Deliberately NOT per-run: the point of the lock is that every run contends for the same file.
+LOCK_FILE="${RWTH_LOCK_FILE:-${TMPDIR:-/tmp}/rwth-run-$(id -u).lock}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"                       # RimWorldTestHarness/
@@ -77,26 +117,83 @@ fail() {
 SCENARIO=""
 NO_TEARDOWN=0
 DELETE_FRAMES=0
+PRINT_CONFIG=0
 for arg in "$@"; do
     case "$arg" in
         --no-teardown) NO_TEARDOWN=1 ;;
         --delete-frames) DELETE_FRAMES=1 ;;
+        --print-config) PRINT_CONFIG=1 ;;
         *) SCENARIO="$arg" ;;
     esac
 done
 if [[ -z "$SCENARIO" ]]; then
-    echo "[run_test] usage: run_test.sh <path/to/scenario.json> [--no-teardown] [--delete-frames]" >&2
+    echo "[run_test] usage: run_test.sh <path/to/scenario.json> [--no-teardown] [--delete-frames] [--print-config]" >&2
     exit 2
 fi
 [[ -f "$SCENARIO" ]] || fail "scenario file not found: $SCENARIO"
 SCENARIO="$(cd "$(dirname "$SCENARIO")" && pwd)/$(basename "$SCENARIO")"
+
+# --print-config resolves every path this run would touch and exits without launching anything,
+# creating anything, or taking the lock. That makes the isolation properties checkable offline: run it
+# twice and confirm the per-run paths differ and the shared ones don't.
+print_config() {
+    echo "RUN_ID=$RUN_ID"
+    echo "RUN_TMP_DIR=$RUN_TMP_DIR"
+    echo "ISOLATE_SAVEDATA=$ISOLATE_SAVEDATA"
+    echo "REAL_CONFIG_DIR=$REAL_CONFIG_DIR"
+    echo "CONFIG_DIR=$CONFIG_DIR"
+    echo "MODSCONFIG=$MODSCONFIG"
+    echo "MODSCONFIG_BAK=$MODSCONFIG_BAK"
+    echo "SAVES_DIR=$SAVES_DIR"
+    echo "AUTOSTART_SAVE=$AUTOSTART_SAVE"
+    echo "AUTOSTART_BAK=$AUTOSTART_BAK"
+    echo "PLAYER_LOG=$PLAYER_LOG"
+    echo "RIMWORLD_STDERR=$RIMWORLD_STDERR"
+    echo "LOCK_FILE=$LOCK_FILE"
+    echo "REPORTS_DIR=$REPORTS_DIR"
+    echo "SCENARIO=$SCENARIO"
+}
+if [[ $PRINT_CONFIG -eq 1 ]]; then
+    print_config
+    exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Preflight
 # ---------------------------------------------------------------------------
 command -v jq >/dev/null || fail "jq not found on PATH."
 command -v python3 >/dev/null || fail "python3 not found on PATH."
+command -v flock >/dev/null || fail "flock not found on PATH (needed for the run guard)."
 [[ -x "$RIMWORLD/RimWorldLinux" ]] || fail "RimWorldLinux not found at $RIMWORLD."
+
+# GenCommandLine.TryGetCommandLineArg splits on '=' and requires exactly two halves, so a save-data
+# path containing '=' would be silently ignored and the game would use the real config dir.
+if [[ "$ISOLATE_SAVEDATA" == "1" && "$CONFIG_DIR" == *=* ]]; then
+    fail "isolated save-data dir contains '=' ($CONFIG_DIR) — RimWorld's -savedatafolder= parser cannot express it."
+fi
+
+# ---------------------------------------------------------------------------
+# Run guard
+# ---------------------------------------------------------------------------
+# Two reasons a run must refuse to start rather than barge in:
+#   1. This box has ~4GiB free of 14GiB and one integrated GPU. Two rendering RimWorlds is at best
+#      slow enough to trip the report timeout.
+#   2. Even one *overlapping* run corrupts the other: the ModsConfig/autostart swap is global, and a
+#      just-exited session's shutdown writes have already caused one confusing false failure.
+# The lock is held on fd 9 for the life of the script, so the kernel releases it however we die — no
+# stale-lock cleanup path to get wrong. The file is never deleted (unlinking it races with waiters).
+# Both checks deliberately sit before the EXIT trap is armed: bowing out here must not run teardown,
+# which would restore/remove config this run never touched.
+exec 9>"$LOCK_FILE" || fail "cannot open lock file $LOCK_FILE"
+if ! flock -n 9; then
+    fail "another run_test.sh holds $LOCK_FILE — wait for it to finish (RWTH_LOCK_FILE overrides)."
+fi
+
+# Separate check: the lock only sees other runs of this script, not a RimWorld the user launched from
+# Steam. We must not kill that (the old code did, via pkill), so we bow out instead.
+if pgrep -x RimWorldLinux >/dev/null 2>&1; then
+    fail "a RimWorldLinux process is already running — close it first. This run will not kill it (it may be your game, or another agent's run)."
+fi
 
 SCENARIO_NAME="$(jq -r '.name' "$SCENARIO")"
 SAVE_FILE="$(jq -r '.saveFile' "$SCENARIO")"
@@ -125,10 +222,30 @@ PROBES_DLL="$TESTMOD_DIR/1.6/Assemblies/CelestialLighting.Probes.dll"
 [[ -f "$PROBES_DLL" ]]    || fail "$PROBES_DLL missing — run CelestialLighting/TestMod/build.sh first."
 
 mkdir -p "$REPORTS_DIR"
+# 700: this dir holds a copy of the user's ModsConfig/Prefs and lives in a world-readable /tmp.
+mkdir -p -m 700 "$RUN_TMP_DIR"
 REPORT_PATH="$REPORTS_DIR/$(basename "$SCENARIO" .json)-$(date +%Y%m%d-%H%M%S).json"
 
 log "Scenario: $SCENARIO_NAME (save=$SAVE_FILE)"
 log "Report will be written to: $REPORT_PATH"
+log "Run scratch dir: $RUN_TMP_DIR (backups, Player.log, stderr)"
+
+# ---------------------------------------------------------------------------
+# Save-data isolation (opt-in)
+# ---------------------------------------------------------------------------
+# Seed the isolated root with a copy of the real Config/ only. That folder is a few KB and carries the
+# things RimWorld would otherwise re-derive from scratch — Prefs.xml, KeyPrefs.xml,
+# LastPlayedVersion.txt, and the ModsConfig.xml whose <version>/<knownExpansions> Step 3 reads. Saves/
+# is deliberately NOT copied: the only save this run needs is the fixture it installs itself.
+seed_isolated_savedata() {
+    log "--- Step 0: isolated save-data root (RWTH_ISOLATE_SAVEDATA=1) ---"
+    [[ -d "$REAL_CONFIG_DIR/Config" ]] || fail "cannot seed isolation: $REAL_CONFIG_DIR/Config not found."
+    mkdir -p "$CONFIG_DIR"
+    cp -r "$REAL_CONFIG_DIR/Config" "$CONFIG_DIR/Config"
+    mkdir -p "$SAVES_DIR"
+    log "Seeded $CONFIG_DIR from $REAL_CONFIG_DIR/Config — the real save data is untouched this run."
+}
+[[ "$ISOLATE_SAVEDATA" == "1" ]] && seed_isolated_savedata
 
 # ---------------------------------------------------------------------------
 # Cleanup / teardown
@@ -137,22 +254,89 @@ CREATED_HARNESS_LINK=0
 CREATED_CELESTIAL_LINK=0
 CREATED_TESTMOD_LINK=0
 AUTOSTART_BAK_MADE=0
+# The EXIT trap is armed before Step 2, so a failure in between (a bad symlink, say) used to reach the
+# restore path with no backups taken — and "no backup" means "no prior autostart.rws existed", so it
+# would delete the user's real save. Only undo the swap if we actually made it.
+BACKUPS_TAKEN=0
+
+# ----- process control (PID-scoped, never by name) -----
+RIMWORLD_PID=""
+
+# Liveness by /proc state rather than `kill -0`. `kill -0` also succeeds for a zombie — an exited child
+# whose status hasn't been collected — which would make the wait-for-death loops below spin. In
+# practice bash's SIGCHLD handler reaps background jobs within milliseconds so a zombie is unlikely to
+# be observed here, but the loops must not depend on that timing. comm can contain spaces, hence the
+# split on the last ')' rather than awk $3.
+pid_alive() {
+    local pid="$1" stat rest
+    [[ -n "$pid" ]] || return 1
+    [[ -r "/proc/$pid/stat" ]] || return 1
+    stat="$(< "/proc/$pid/stat")" 2>/dev/null || return 1
+    rest="${stat##*) }"
+    [[ "${rest%% *}" != "Z" ]]
+}
+
+# Replaces `pkill -9 -x RimWorldLinux`, which killed every instance on the box — including the user's
+# own game and any concurrent run. We only ever signal the child this script started.
+#
+# The old pkill -9 was relied on to guarantee teardown, so this must be just as final: SIGTERM first
+# (lets Unity flush its log), then SIGKILL if it hasn't gone within the grace window. If even SIGKILL
+# leaves it there (uninterruptible in a GPU/driver call), say so loudly instead of pretending.
+kill_rimworld() {
+    local pid="${RIMWORLD_PID:-}" waited=0
+    pid_alive "$pid" || return 0
+
+    log "Stopping RimWorld (PID $pid) with SIGTERM..."
+    kill -TERM "$pid" 2>/dev/null || true
+    while pid_alive "$pid" && (( waited < 10 )); do
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    if pid_alive "$pid"; then
+        log "PID $pid ignored SIGTERM after ${waited}s — escalating to SIGKILL."
+        kill -KILL "$pid" 2>/dev/null || true
+        waited=0
+        while pid_alive "$pid" && (( waited < 10 )); do
+            sleep 1
+            waited=$((waited + 1))
+        done
+    fi
+
+    if pid_alive "$pid"; then
+        log "Warning: PID $pid survived SIGKILL for 10s — it may be stuck in the kernel. Not escalating by name."
+    else
+        log "RimWorld PID $pid stopped."
+        wait "$pid" 2>/dev/null || true   # reap the zombie so /proc/<pid> goes away
+    fi
+}
 
 cleanup_done=0
 cleanup() {
     if [[ $cleanup_done -eq 1 ]]; then return; fi
     cleanup_done=1
     log "Cleaning up..."
-    pkill -9 -x RimWorldLinux 2>/dev/null || true
+    kill_rimworld
     if [[ $NO_TEARDOWN -eq 0 ]]; then
         teardown
+        discard_run_scratch
     else
-        log "--no-teardown: leaving symlinks, ModsConfig, and Saves/autostart.rws in place."
+        log "--no-teardown: leaving symlinks, ModsConfig, Saves/autostart.rws, and $RUN_TMP_DIR in place."
     fi
 }
 trap cleanup EXIT INT TERM
 
-teardown() {
+# The config backups have done their job once teardown has restored them; leaving copies of the user's
+# ModsConfig/Prefs lying around in /tmp is pointless. Player.log and the stderr log stay — they're the
+# post-mortem evidence every failure message points at — so the dir is only removed if it ends up
+# empty, i.e. on a clean run with nothing worth keeping.
+discard_run_scratch() {
+    rm -f "$MODSCONFIG_BAK" "$AUTOSTART_BAK"
+    [[ "$ISOLATE_SAVEDATA" == "1" ]] && rm -rf "$CONFIG_DIR"
+    rmdir "$RUN_TMP_DIR" 2>/dev/null || log "Logs kept in $RUN_TMP_DIR"
+}
+
+restore_swapped_config() {
     log "Restoring ModsConfig from backup..."
     if [[ -f "$MODSCONFIG_BAK" ]]; then
         cp "$MODSCONFIG_BAK" "$MODSCONFIG"
@@ -168,6 +352,14 @@ teardown() {
     else
         rm -f "$AUTOSTART_SAVE"
         log "No prior autostart.rws existed — removed the fixture copy."
+    fi
+}
+
+teardown() {
+    if [[ $BACKUPS_TAKEN -eq 1 ]]; then
+        restore_swapped_config
+    else
+        log "Nothing to restore — the run never got as far as backing up ModsConfig/autostart.rws."
     fi
 
     log "Removing symlinks this run created..."
@@ -211,6 +403,8 @@ if [[ -f "$AUTOSTART_SAVE" ]]; then
 else
     log "No existing autostart.rws — nothing to back up."
 fi
+# From here on teardown has something real to undo (see BACKUPS_TAKEN above).
+BACKUPS_TAKEN=1
 
 # ---------------------------------------------------------------------------
 # Step 3: write minimal ModsConfig.xml
@@ -280,8 +474,27 @@ fi
 # ---------------------------------------------------------------------------
 # Step 5: launch, with retry on the known early-startup Boehm-GC crash
 # ---------------------------------------------------------------------------
+# "Is OUR game still up?" — not "is any RimWorld up?". The old pgrep -x version would report alive
+# because a concurrent run's instance existed, so this run would sit waiting for a report that nothing
+# was going to write. RimWorldLinux is a plain ELF launched directly here (no wrapper script that
+# would exec a different PID), so $! is the process to watch.
 rimworld_alive() {
-    pgrep -x RimWorldLinux >/dev/null 2>&1 || kill -0 "${RIMWORLD_PID:-0}" 2>/dev/null
+    pid_alive "${RIMWORLD_PID:-}"
+}
+
+# With RWTH_ISOLATE_SAVEDATA=1 we must not merely hope the override took: a run that quietly used the
+# real config dir while claiming isolation is worse than no isolation. GenFilePaths logs the override
+# verbatim when it first resolves SaveDataFolderPath (well before mod load), so its absence — or a
+# different path — is a hard failure.
+assert_savedata_folder() {
+    [[ "$ISOLATE_SAVEDATA" == "1" ]] || return 0
+    local expected="Save data folder overridden to $CONFIG_DIR"
+    if grep -qF "$expected" "$PLAYER_LOG" 2>/dev/null; then
+        log "Verified: game reported '$expected'."
+        return 0
+    fi
+    log "Player.log 'Save data folder' lines: $(grep -F 'Save data folder' "$PLAYER_LOG" 2>/dev/null || echo '(none)')"
+    fail "isolation not confirmed — RimWorld never logged '$expected', so it may have used the real config dir. Check $PLAYER_LOG."
 }
 
 launch_rimworld() {
@@ -292,11 +505,9 @@ launch_rimworld() {
         attempt=$((attempt + 1))
         log "Launching RimWorld (attempt $attempt / $max_retries)..."
 
-        if pgrep -x RimWorldLinux >/dev/null 2>&1; then
-            log "Found a stray RimWorldLinux process — killing it before launching."
-            pkill -9 -x RimWorldLinux 2>/dev/null || true
-            sleep 2
-        fi
+        # Only ever our own previous attempt: the run-guard preflight already established no other
+        # instance existed, and if one appeared since it isn't ours to kill.
+        kill_rimworld
 
         : > "$PLAYER_LOG"
         : > "$RIMWORLD_STDERR"
@@ -308,11 +519,19 @@ launch_rimworld() {
         local quicktest_arg=()
         [[ $USE_QUICKTEST -eq 1 ]] && quicktest_arg=(-quicktest)
 
+        # RimWorld's own save-data redirect (see ISOLATE_SAVEDATA in Paths). Empty in the default
+        # non-isolated mode, so the launch line is byte-identical to before.
+        local savedata_arg=()
+        [[ "$ISOLATE_SAVEDATA" == "1" ]] && savedata_arg=("-savedatafolder=$CONFIG_DIR")
+
         RWTH_SCENARIO="$SCENARIO" RWTH_REPORT="$REPORT_PATH" \
             "$RIMWORLD/RimWorldLinux" --no-sandbox \
             "${quicktest_arg[@]}" \
+            "${savedata_arg[@]}" \
             -logfile "$PLAYER_LOG" \
-            2>"$RIMWORLD_STDERR" &
+            2>"$RIMWORLD_STDERR" 9>&- &
+        # 9>&- closes the run lock in the child: flock lives on the open file description, which a
+        # forked game would otherwise keep held past our exit and lock out every later run.
         RIMWORLD_PID=$!
         log "RimWorldLinux PID: $RIMWORLD_PID"
 
@@ -345,6 +564,7 @@ launch_rimworld() {
         fi
 
         log "RimWorld running (survived 60s crash window)."
+        assert_savedata_folder
         return 0
     done
 }
@@ -379,8 +599,8 @@ fi
 # right after writing the report); kill it if it's still around after that.
 sleep 3
 if rimworld_alive; then
-    log "RimWorld still running after report — killing it."
-    pkill -9 -x RimWorldLinux 2>/dev/null || true
+    log "RimWorld still running after report — stopping it."
+    kill_rimworld
 fi
 
 # ---------------------------------------------------------------------------
