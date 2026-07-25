@@ -35,6 +35,7 @@ public static class AnimalLayout
         StepArgs.SceneAnchor,
         StepArgs.SceneOffset,
         StepArgs.SceneUnfog,
+        StepArgs.SceneClear,
     };
 
     // Returns false with a specific reason rather than throwing, so a malformed scenario yields a
@@ -58,6 +59,8 @@ public static class AnimalLayout
         if (!SceneLayout.ReadPositive(args, StepArgs.SpawnAnimalSpacing, DefaultSpacing, out int spacing, out error))
             return false;
         if (!ArgReader.TryReadBool(args, StepArgs.SceneUnfog, SceneLayout.DefaultUnfog, out plan.Unfog, out error))
+            return false;
+        if (!ArgReader.TryReadBool(args, StepArgs.SceneClear, SceneLayout.DefaultClear, out plan.Clear, out error))
             return false;
 
         if (count > MaxCount)
@@ -102,6 +105,11 @@ public sealed class AnimalPlan : IAnchoredPlan
     // PlaceThings: RimWorld draws nothing in fogged cells, so a scene built at map centre on a fresh
     // colony is invisible while every step still reports success. See StepArgs.SceneUnfog.
     public bool Unfog = SceneLayout.DefaultUnfog;
+
+    // Clear each spawn cell of destroyable things and roof before spawning, so an animal can land on a
+    // cell a wall or rock would otherwise refuse. Opt-in (default false), same as PlaceThings/SetTerrain
+    // and for the same reason: clearing permanently destroys map content. See StepArgs.SceneClear.
+    public bool Clear = SceneLayout.DefaultClear;
 
     // One entry per animal, as an anchor-relative offset. The adapter resolves the anchor against a
     // live Map and reports any cell that refused its pawn, so a partial spawn is never silent.
