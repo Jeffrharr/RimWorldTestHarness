@@ -159,7 +159,7 @@ permanently destroys whatever occupies the footprint, so it's opt-in; a roofed f
 | `PlaceThings` | `def`, `stuff`, `rot`, `layout`, `cols`/`rows`/`spacing`, `count`/`axis`, `cells` | `layout` is `grid` (default), `row`, or `cells` (`"0,0; 4,0; 8,-3"`). `rot` is `North`/`East`/`South`/`West` — a lowercase typo fails the scenario rather than silently meaning North. |
 | `SetTerrain` | `def`, `width`, `height` | Paints a rectangle of a `TerrainDef`. |
 | `LookAt` | `zoom` | Aims the camera at the anchor. Omit `zoom` to keep the current one. |
-| `SpawnAnimal` | `kind`, `count`, `spacing` | Generates wild animals (no faction) in a row along +x from the anchor. `kind` is a `PawnKindDef` defName (e.g. `Muffalo`); a non-animal kind is rejected. `count` defaults to 1, `spacing` to 2 cells. Any cell that can't take a pawn (wall, deep water) is reported, not silently skipped. |
+| `SpawnAnimal` | `kind`, `count`, `spacing`, `clear` | Generates wild animals (no faction) in a row along +x from the anchor. `kind` is a `PawnKindDef` defName (e.g. `Muffalo`); a non-animal kind is rejected. `count` defaults to 1, `spacing` to 2 cells. `clear` (default false) destroys destroyables and strips roof in each spawn cell first, so an animal can land where a wall or rock stood. Any cell that still can't take a pawn (deep water, indestructible edifice) is reported, not silently skipped. |
 
 **Composite**
 

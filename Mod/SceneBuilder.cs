@@ -416,15 +416,28 @@ public static class SceneBuilder
 
         IntVec3 anchor = ResolveAnchor(plan, map);
         List<string> refused = new List<string>();
+        ClearTally tally = new ClearTally();
+
+        // Reused across cells rather than allocated per cell, matching PlaceThings — a large row would
+        // otherwise churn a list per cell for a case that is almost always empty.
+        List<string> blockersHere = new List<string>();
         int spawned = 0;
 
         foreach (ScenePlacement placement in plan.Cells)
         {
             IntVec3 cell = anchor + new IntVec3(placement.Dx, 0, placement.Dz);
+            blockersHere.Clear();
+
+            // Clearing runs BEFORE the standable re-check inside TrySpawnAnimal, exactly as PlaceThings
+            // orders it against CanSpawnAt: a wall is destroyable, so clearing turns a cell that would
+            // refuse a pawn into one that accepts it, while re-checking afterwards still keeps a
+            // genuinely un-standable cell (deep water, an indestructible edifice) an honest refusal.
+            PrepareCell(map, cell, plan.Clear, tally, blockersHere);
+
             if (TrySpawnAnimal(kind, cell, map, out string? reason))
                 spawned++;
             else
-                refused.Add($"({cell.x},{cell.z}) {reason}");
+                refused.Add($"({cell.x},{cell.z}) {reason}{SceneClearing.RefusalDetail(blockersHere)}");
         }
 
         // Unfog last, after spawning: RimWorld draws nothing in fogged cells, so a scene built at map
@@ -433,7 +446,12 @@ public static class SceneBuilder
         if (plan.Unfog)
             Unfog(map);
 
-        return ShortfallError(spawned, plan.Cells.Count, kind.defName, refused);
+        // Both failure modes surfaced, joined, like PlaceThings: a run that mentions a refused cell
+        // while silently sitting on a blocker clearing couldn't remove is the same false-confidence
+        // failure this harness exists to catch.
+        return JoinProblems(
+            ShortfallError(spawned, plan.Cells.Count, kind.defName, refused),
+            ReportClearing(StepArgs.SpawnAnimalType, plan.Clear, tally));
     }
 
     // errorOnFail: false — a bad kind name is a scenario bug that belongs in the report, not a

@@ -1,0 +1,12 @@
+{
+  "name": "spawn_on_wall",
+  "saveFile": "minimal_colony.rws",
+  "steps": [
+    { "type": "SetTime", "args": { "hour": "12" } },
+    { "type": "SetTerrain", "args": { "def": "Concrete", "width": "20", "height": "12", "clear": "true" } },
+    { "type": "PlaceThings", "args": { "def": "Wall", "stuff": "BlocksGranite", "layout": "cells", "cells": "0,0; 3,0; 6,0" } },
+    { "type": "SpawnAnimal", "args": { "kind": "Muffalo", "count": "3", "spacing": "3", "clear": "true" } },
+    { "type": "LookAt", "args": { "zoom": "14" } },
+    { "type": "Screenshot", "args": { "fileName": "muffalo_on_wall.png" } }
+  ]
+}

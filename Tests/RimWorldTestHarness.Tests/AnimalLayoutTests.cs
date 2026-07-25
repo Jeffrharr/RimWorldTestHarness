@@ -161,4 +161,29 @@ public class AnimalLayoutTests
         AnimalPlan plan = Plan((StepArgs.SceneUnfog, "false"));
         Assert.That(plan.Unfog, Is.False);
     }
+
+    // ----- clear ------------------------------------------------------------------------------
+
+    // Clearing is opt-in, like PlaceThings/SetTerrain: bare args must not permanently destroy map
+    // content the scenario didn't ask to remove.
+    [Test]
+    public void Plan_ClearDefaultsToFalse()
+    {
+        AnimalPlan plan = Plan();
+        Assert.That(plan.Clear, Is.False);
+    }
+
+    [Test]
+    public void Plan_ClearTrue_IsCarried()
+    {
+        AnimalPlan plan = Plan((StepArgs.SceneClear, "true"));
+        Assert.That(plan.Clear, Is.True);
+    }
+
+    [Test]
+    public void Plan_NonBoolClear_IsRejected()
+    {
+        string error = PlanError(KindArgs((StepArgs.SceneClear, "yes")));
+        Assert.That(error, Does.Contain(StepArgs.SceneClear));
+    }
 }
