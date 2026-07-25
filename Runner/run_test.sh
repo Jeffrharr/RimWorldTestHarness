@@ -7,13 +7,13 @@
 # load"). One scenario on the command line behaves exactly as it always has, report shape included.
 #
 # What this does:
-#   1. Symlinks RimWorldTestHarness, CelestialLighting, and CelestialLighting/TestMod into
-#      RimWorld's Mods folder if not already present (CelestialLighting is normally already
-#      symlinked as a real active mod — this script never removes a symlink it didn't create).
+#   1. Symlinks RimWorldTestHarness and every --mod folder into RimWorld's Mods folder if not
+#      already present (a mod under test is often already symlinked as a real active mod — this
+#      script never removes a symlink it didn't create).
 #   2. Backs up the real ModsConfig.xml and any existing Saves/autostart.rws.
 #   3. Writes a minimal ModsConfig.xml: Core + installed DLCs + brrainz.harmony + the union of
-#      every selected scenario's requiredMods + joof.celestiallighting +
-#      joof.rimworldtestharness + joof.celestiallighting.probes.
+#      every selected scenario's requiredMods + each --mod's packageId (read from its own
+#      About/About.xml) + joof.rimworldtestharness, which goes last so its patches wrap theirs.
 #   4. Copies the scenarios' Fixtures/<saveFile> to Saves/autostart.rws — RimWorld's own vanilla
 #      autostart mechanism (Root_Entry.Start -> SaveGameFilesUtility.GetAutostartSaveFile, gated
 #      on Prefs.DevMode which Patch_ForceDevMode forces true while a scenario is active) loads it
@@ -34,8 +34,13 @@
 #   ./run_test.sh <a.json> <b.json> [<c.json> ...] [flags] # suite, one game load
 #   ./run_test.sh --suite <suite.txt> [flags]              # suite from a list file
 #   ./run_test.sh ../SomeMod/Tests/Scenarios/*.json        # the shell does the globbing
+#   ./run_test.sh --mod ../SomeMod --mod ../SomeMod/TestMod ../SomeMod/Tests/Scenarios/x.json
 #
 # Flags:
+#   --mod <folder>         a mod to activate alongside the harness — the mod whose probes/features
+#                          the scenarios exercise. Repeatable, and optional: this repo's own
+#                          Scenarios/ use only vanilla defs and need no --mod at all. Pass a mod and
+#                          its probe-bridge folder in the order you want them loaded.
 #   --no-teardown          leave symlinks/ModsConfig/autostart.rws in place afterwards
 #   --delete-frames        delete timelapse PNGs once stitched
 #   --isolation=POLICY     auto (default) | always | never — how hard a suite works to isolate one
@@ -113,19 +118,6 @@ LOCK_FILE="${RWTH_LOCK_FILE:-${TMPDIR:-/tmp}/rwth-run-$(id -u).lock}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"                       # RimWorldTestHarness/
-# The mod under test normally sits in a sibling repo, but that only holds for the canonical checkout:
-# a git worktree (the mandated workflow when several agents share this repo set) lives under
-# .worktrees/, where no sibling CelestialLighting exists. Overridable so a worktree can still do a live
-# run against the real mod instead of dying on a bare `cd`.
-CELESTIAL_DIR_RAW="${RWTH_CELESTIAL_DIR:-$REPO_DIR/../CelestialLighting}"
-if [[ ! -d "$CELESTIAL_DIR_RAW" ]]; then
-    echo "[run_test] FAIL: mod-under-test dir not found at $CELESTIAL_DIR_RAW." >&2
-    echo "[run_test]   Set RWTH_CELESTIAL_DIR to CelestialLighting's checkout — needed when running" >&2
-    echo "[run_test]   from a git worktree, which has no sibling copy." >&2
-    exit 1
-fi
-CELESTIAL_DIR="$(cd "$CELESTIAL_DIR_RAW" && pwd)"
-TESTMOD_DIR="$CELESTIAL_DIR/TestMod"
 REPORTS_DIR="$SCRIPT_DIR/reports"
 
 log()  { echo "[run_test] $*"; }
@@ -145,12 +137,19 @@ DELETE_FRAMES=0
 ISOLATION="auto"
 PRINT_CONFIG=0
 
+# Mod folders to activate alongside the harness — the mods whose probes/features the scenarios
+# exercise. Repeatable, and legitimately empty: the harness's own scenarios under Scenarios/ use
+# only vanilla defs, so a bare run needs no mod under test at all. Passed as paths rather than
+# packageIds because the run has to symlink the folder into Mods/ as well as name it in ModsConfig,
+# and only the folder knows both.
+MODS_UNDER_TEST=()
+
 abspath() { echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; }
 
 usage() {
     echo "[run_test] usage: run_test.sh <scenario.json> [more.json ...] [--suite <list.txt>]" >&2
-    echo "[run_test]        [--no-teardown] [--delete-frames] [--isolation=auto|always|never]" >&2
-    echo "[run_test]        [--print-config]" >&2
+    echo "[run_test]        [--mod <mod-folder>]... [--no-teardown] [--delete-frames]" >&2
+    echo "[run_test]        [--isolation=auto|always|never] [--print-config]" >&2
     exit 2
 }
 
@@ -163,6 +162,8 @@ while (( $# )); do
         --isolation) shift; ISOLATION="${1:-}" ;;
         --suite) shift; SUITE_LIST_IN="${1:-}" ;;
         --suite=*) SUITE_LIST_IN="${1#--suite=}" ;;
+        --mod) shift; MODS_UNDER_TEST+=("${1:-}") ;;
+        --mod=*) MODS_UNDER_TEST+=("${1#--mod=}") ;;
         -*) echo "[run_test] unknown flag: $1" >&2; usage ;;
         *) SCENARIOS+=("$1") ;;
     esac
@@ -173,6 +174,21 @@ case "$ISOLATION" in
     auto|always|never) ;;
     *) fail "--isolation must be auto, always or never (got '$ISOLATION')" ;;
 esac
+
+# Resolve each --mod to an absolute path plus the packageId read from its OWN About/About.xml. The
+# ids are not hardcoded here on purpose: a list of them baked into this script is precisely the
+# single-mod coupling this replaces, and it would silently rot the moment a mod renamed itself.
+MOD_UT_DIRS=()
+MOD_UT_LINKS=()
+for mod_arg in ${MODS_UNDER_TEST[@]+"${MODS_UNDER_TEST[@]}"}; do
+    [[ -n "$mod_arg" ]] || fail "--mod needs a path."
+    [[ -d "$mod_arg" ]] || fail "--mod '$mod_arg' is not a directory."
+    [[ -f "$mod_arg/About/About.xml" ]] ||
+        fail "--mod '$mod_arg' has no About/About.xml — that's not a RimWorld mod folder."
+    mod_dir="$(cd "$mod_arg" && pwd)"
+    MOD_UT_DIRS+=("$mod_dir")
+    MOD_UT_LINKS+=("$(basename "$mod_dir")")
+done
 
 # A --suite list contributes its entries alongside any given on the command line, so the two ways of
 # selecting scenarios compose instead of one silently winning.
@@ -233,7 +249,15 @@ print_config() {
     echo "RIMWORLD_STDERR=$RIMWORLD_STDERR"
     echo "LOCK_FILE=$LOCK_FILE"
     echo "REPORTS_DIR=$REPORTS_DIR"
-    echo "SCENARIO=$SCENARIO"
+    # The scenario LIST, not the single $SCENARIO: this function runs before the suite/single split
+    # is resolved, so $SCENARIO does not exist yet and reading it here aborted the whole flag under
+    # `set -u`. Printing the list is also the more useful answer once a run can hold several.
+    for scenario_path in ${SCENARIOS[@]+"${SCENARIOS[@]}"}; do
+        echo "SCENARIO=$scenario_path"
+    done
+    for mod_dir in ${MOD_UT_DIRS[@]+"${MOD_UT_DIRS[@]}"}; do
+        echo "MOD_UNDER_TEST=$mod_dir"
+    done
 }
 if [[ $PRINT_CONFIG -eq 1 ]]; then
     print_config
@@ -316,11 +340,38 @@ else
 fi
 
 HARNESS_DLL="$REPO_DIR/1.6/Assemblies/RimWorldTestHarness.dll"
-CELESTIAL_DLL="$CELESTIAL_DIR/1.6/Assemblies/CelestialLighting.dll"
-PROBES_DLL="$TESTMOD_DIR/1.6/Assemblies/CelestialLighting.Probes.dll"
-[[ -f "$HARNESS_DLL" ]]   || fail "$HARNESS_DLL missing — run RimWorldTestHarness/build.sh first."
-[[ -f "$CELESTIAL_DLL" ]] || fail "$CELESTIAL_DLL missing — run CelestialLighting/build.sh first."
-[[ -f "$PROBES_DLL" ]]    || fail "$PROBES_DLL missing — run CelestialLighting/TestMod/build.sh first."
+[[ -f "$HARNESS_DLL" ]] || fail "$HARNESS_DLL missing — run RimWorldTestHarness/build.sh first."
+
+# A mod under test with no built assembly is WARNED about, not failed on: a Defs-only XML mod is a
+# perfectly good test subject, and this script can't tell one from a C# mod someone forgot to build.
+# The scenario's own probe steps are the real gate — a missing probe fails the run with a named
+# error rather than passing quietly.
+for mod_dir in ${MOD_UT_DIRS[@]+"${MOD_UT_DIRS[@]}"}; do
+    compgen -G "$mod_dir/*/Assemblies/*.dll" >/dev/null ||
+        log "Warning: no built assembly under $mod_dir — if it's a C# mod, run its build.sh first."
+done
+
+# packageIds come from each mod's own About.xml. Lowercased because that's what RimWorld writes into
+# ModsConfig.xml and what this script has always emitted for its own ids.
+MOD_UT_IDS_JSON="[]"
+if (( ${#MOD_UT_DIRS[@]} )); then
+    MOD_UT_IDS_JSON="$(python3 - ${MOD_UT_DIRS[@]+"${MOD_UT_DIRS[@]}"} <<'PYEOF'
+import json, re, sys
+
+ids = []
+for d in sys.argv[1:]:
+    with open(f"{d}/About/About.xml", encoding="utf-8") as f:
+        m = re.search(r"<packageId>(.*?)</packageId>", f.read(), re.S | re.I)
+    if not m:
+        sys.exit(f"no <packageId> in {d}/About/About.xml")
+    ids.append(m.group(1).strip().lower())
+print(json.dumps(ids))
+PYEOF
+)" || fail "could not read a packageId from a --mod About/About.xml"
+    log "Mods under test: $(echo "$MOD_UT_IDS_JSON" | jq -r 'join(", ")')"
+else
+    log "Mods under test: none (harness-only run)."
+fi
 
 mkdir -p "$REPORTS_DIR"
 # 700: this dir holds a copy of the user's ModsConfig/Prefs and lives in a world-readable /tmp.
@@ -375,9 +426,9 @@ seed_isolated_savedata() {
 # ---------------------------------------------------------------------------
 # Cleanup / teardown
 # ---------------------------------------------------------------------------
-CREATED_HARNESS_LINK=0
-CREATED_CELESTIAL_LINK=0
-CREATED_TESTMOD_LINK=0
+# Link names this run created under Mods/, so teardown removes exactly those and never a symlink
+# that was already there (a mod under test is often already installed as a real, played mod).
+CREATED_LINKS=()
 AUTOSTART_BAK_MADE=0
 # The EXIT trap is armed before Step 2, so a failure in between (a bad symlink, say) used to reach the
 # restore path with no backups taken — and "no backup" means "no prior autostart.rws existed", so it
@@ -488,29 +539,31 @@ teardown() {
     fi
 
     log "Removing symlinks this run created..."
-    [[ $CREATED_HARNESS_LINK -eq 1 ]]   && rm -f "$MODS_DIR/RimWorldTestHarness"
-    [[ $CREATED_CELESTIAL_LINK -eq 1 ]] && rm -f "$MODS_DIR/CelestialLighting"
-    [[ $CREATED_TESTMOD_LINK -eq 1 ]]   && rm -f "$MODS_DIR/CelestialLighting.Probes"
+    local link_name
+    for link_name in ${CREATED_LINKS[@]+"${CREATED_LINKS[@]}"}; do
+        rm -f "$MODS_DIR/$link_name"
+    done
 }
 
 # ---------------------------------------------------------------------------
 # Step 1: symlinks (idempotent — never touch a symlink/dir that already existed,
-# e.g. CelestialLighting is normally already active as a real mod)
+# a mod under test is often already active as a real, played mod)
 # ---------------------------------------------------------------------------
 setup_symlink() {
-    local target="$1" link_name="$2" var_name="$3"
+    local target="$1" link_name="$2"
     if [[ -e "$MODS_DIR/$link_name" || -L "$MODS_DIR/$link_name" ]]; then
         log "Mods/$link_name already present — leaving as-is."
     else
         ln -s "$target" "$MODS_DIR/$link_name"
-        printf -v "$var_name" '%d' 1
+        CREATED_LINKS+=("$link_name")
         log "Symlinked Mods/$link_name -> $target"
     fi
 }
 log "--- Step 1: mod symlinks ---"
-setup_symlink "$REPO_DIR"      "RimWorldTestHarness"        CREATED_HARNESS_LINK
-setup_symlink "$CELESTIAL_DIR" "CelestialLighting"           CREATED_CELESTIAL_LINK
-setup_symlink "$TESTMOD_DIR"   "CelestialLighting.Probes"    CREATED_TESTMOD_LINK
+setup_symlink "$REPO_DIR" "RimWorldTestHarness"
+for i in "${!MOD_UT_DIRS[@]}"; do
+    setup_symlink "${MOD_UT_DIRS[$i]}" "${MOD_UT_LINKS[$i]}"
+done
 
 # ---------------------------------------------------------------------------
 # Step 2: back up ModsConfig.xml and any existing autostart.rws
@@ -535,7 +588,8 @@ BACKUPS_TAKEN=1
 # Step 3: write minimal ModsConfig.xml
 # ---------------------------------------------------------------------------
 log "--- Step 3: writing minimal ModsConfig.xml ---"
-RIMWORLD="$RIMWORLD" REQUIRED_MODS_JSON="$REQUIRED_MODS_JSON" python3 - "$MODSCONFIG" <<'PYEOF'
+RIMWORLD="$RIMWORLD" REQUIRED_MODS_JSON="$REQUIRED_MODS_JSON" \
+    MOD_UT_IDS_JSON="$MOD_UT_IDS_JSON" python3 - "$MODSCONFIG" <<'PYEOF'
 import json, os, re, sys
 
 path = sys.argv[1]
@@ -558,11 +612,20 @@ data_dir = os.path.join(os.environ["RIMWORLD"], "Data")
 dlc_ids = [pid for (folder, pid) in dlc_candidates if os.path.isdir(os.path.join(data_dir, folder))]
 
 required = json.loads(os.environ.get("REQUIRED_MODS_JSON", "[]"))
+mods_under_test = json.loads(os.environ.get("MOD_UT_IDS_JSON", "[]"))
 
-active = (
-    ["ludeon.rimworld"] + dlc_ids + ["brrainz.harmony"] + required +
-    ["joof.celestiallighting", "joof.rimworldtestharness", "joof.celestiallighting.probes"]
-)
+# The harness goes LAST, after every mod under test, for the reason About.xml's <loadAfter> states:
+# its patches must wrap theirs and its probes must read state those mods have already applied. Mods
+# under test keep the order they were passed in, so a mod plus its probe-bridge assembly land in the
+# order their author asked for rather than one this script invented.
+#
+# De-duplicated because a scenario's requiredMods may legitimately name a mod that is also under
+# test, and a packageId listed twice makes RimWorld refuse to boot.
+active = []
+for pid in (["ludeon.rimworld"] + dlc_ids + ["brrainz.harmony"] + required +
+            mods_under_test + ["joof.rimworldtestharness"]):
+    if pid not in active:
+        active.append(pid)
 
 lis = "\n".join(f"    <li>{pid}</li>" for pid in active)
 out = (

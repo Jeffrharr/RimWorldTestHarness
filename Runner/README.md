@@ -1,23 +1,32 @@
 # Runner
 
 `run_test.sh <scenario.json>` launches RimWorld with a scenario spec, waits for it to finish, and
-gates on the resulting `ScenarioReport`. Currently hardcoded to CelestialLighting as the mod under
-test (symlinks, ModsConfig entries) — generalizing to other mods would mean parameterizing that
-list instead of adding a scenario JSON field, since which mods it activates isn't really part of
-"what to script in-game".
+gates on the resulting `ScenarioReport`.
+
+Which mods it activates is a **runner argument**, not a scenario field: pass `--mod <folder>` once
+per mod under test. That stays out of the scenario JSON deliberately — which mods a run activates
+isn't part of "what to script in-game", and baking it into the spec would make the same scenario
+unrunnable against a different modset.
 
 ```bash
-# A scenario path is just an arg, so mod-specific scenarios live in the mod's own repo:
-./run_test.sh ../../CelestialLighting/Tests/Scenarios/shadow_lean_equinox.json
-# The harness's own modset-agnostic demos still live here:
+# No --mod at all: this repo's own scenarios use only vanilla defs.
 ./run_test.sh ../Scenarios/daycycle_timelapse.json
+
+# A mod under test plus its probe-bridge folder, in load order. Scenario paths are just args, so
+# mod-specific scenarios live in that mod's own repo:
+./run_test.sh --mod ../../SomeMod --mod ../../SomeMod/TestMod \
+              ../../SomeMod/Tests/Scenarios/some_probe.json
 ```
 
+Each `--mod` folder must contain `About/About.xml`; its `<packageId>` is read from there rather than
+hardcoded anywhere in this script. The harness's own packageId is always appended **last**, so its
+patches wrap the mod's and its probes read state those mods have already applied. A `--mod` with no
+built assembly is warned about, not failed on — a Defs-only XML mod is a valid test subject.
+
 Requires the scenario's `Fixtures/<saveFile>` to already exist (see `Fixtures/README.md` — manual,
-not scriptable) and `RimWorldTestHarness`/`CelestialLighting`/`CelestialLighting/TestMod` all built
-(`build.sh` in each). Launches RimWorldLinux and temporarily swaps
-`ModsConfig.xml`/`Saves/autostart.rws` — both backed up and restored on exit (`--no-teardown` to
-skip cleanup for post-mortem debugging).
+not scriptable) and `RimWorldTestHarness` built (`../build.sh`), plus each `--mod` built if it ships
+C#. Launches RimWorldLinux and temporarily swaps `ModsConfig.xml`/`Saves/autostart.rws` — both
+backed up and restored on exit (`--no-teardown` to skip cleanup for post-mortem debugging).
 
 `reports/` (gitignored) holds timestamped `ScenarioReport` JSON per run, plus any screenshots the
 scenario captured.
@@ -31,7 +40,7 @@ run inside a single game load:
 # Several scenarios, one boot:
 ./run_test.sh ../Scenarios/daycycle_timelapse.json ../Scenarios/shadow_casters_daycycle.json
 # The shell globs:
-./run_test.sh ../../CelestialLighting/Tests/Scenarios/*.json
+./run_test.sh --mod ../../SomeMod ../../SomeMod/Tests/Scenarios/*.json
 # Or a checked-in list file:
 ./run_test.sh --suite ../Scenarios/demo_suite.txt
 ```

@@ -121,7 +121,7 @@ public class LiveProtocolTests
             Game = new CatalogGame
             {
                 Version = "1.6.4",
-                LoadedMods = { "Core", "joof.celestiallighting" },
+                LoadedMods = { "Core", "example.modundertest" },
                 MapName = "Colony",
                 Tick = 123456,
             },
@@ -135,7 +135,7 @@ public class LiveProtocolTests
         Assert.That(back.Actions[0].Args[0].Key, Is.EqualTo("fileName"));
         Assert.That(back.Actions[1].Source, Is.EqualTo("native"));
         Assert.That(back.Probes[0].Name, Is.EqualTo("shadow_lean"));
-        Assert.That(back.Game.LoadedMods, Does.Contain("joof.celestiallighting"));
+        Assert.That(back.Game.LoadedMods, Does.Contain("example.modundertest"));
     }
 
     [Test]
