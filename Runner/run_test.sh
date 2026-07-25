@@ -13,7 +13,9 @@
 #   2. Backs up the real ModsConfig.xml and any existing Saves/autostart.rws.
 #   3. Writes a minimal ModsConfig.xml: Core + installed DLCs + brrainz.harmony + the union of
 #      every selected scenario's requiredMods + each --mod's packageId (read from its own
-#      About/About.xml) + joof.rimworldtestharness, which goes last so its patches wrap theirs.
+#      About/About.xml) + joof.rimworldtestharness, which goes after them so its patches wrap
+#      theirs — except any --mod that itself depends on the harness (a probe bridge), which must
+#      load after it or its assembly cannot resolve IProbe.
 #   4. Copies the scenarios' Fixtures/<saveFile> to Saves/autostart.rws — RimWorld's own vanilla
 #      autostart mechanism (Root_Entry.Start -> SaveGameFilesUtility.GetAutostartSaveFile, gated
 #      on Prefs.DevMode which Patch_ForceDevMode forces true while a scenario is active) loads it
@@ -354,21 +356,39 @@ done
 # packageIds come from each mod's own About.xml. Lowercased because that's what RimWorld writes into
 # ModsConfig.xml and what this script has always emitted for its own ids.
 MOD_UT_IDS_JSON="[]"
+MOD_UT_AFTER_HARNESS_JSON="[]"
 if (( ${#MOD_UT_DIRS[@]} )); then
-    MOD_UT_IDS_JSON="$(python3 - ${MOD_UT_DIRS[@]+"${MOD_UT_DIRS[@]}"} <<'PYEOF'
+    MOD_UT_SPLIT_JSON="$(python3 - ${MOD_UT_DIRS[@]+"${MOD_UT_DIRS[@]}"} <<'PYEOF'
 import json, re, sys
 
-ids = []
+HARNESS = "joof.rimworldtestharness"
+
+ids, after = [], []
 for d in sys.argv[1:]:
     with open(f"{d}/About/About.xml", encoding="utf-8") as f:
-        m = re.search(r"<packageId>(.*?)</packageId>", f.read(), re.S | re.I)
+        about = f.read()
+    m = re.search(r"<packageId>(.*?)</packageId>", about, re.S | re.I)
     if not m:
         sys.exit(f"no <packageId> in {d}/About/About.xml")
-    ids.append(m.group(1).strip().lower())
-print(json.dumps(ids))
+    pid = m.group(1).strip().lower()
+    ids.append(pid)
+    # A probe-bridge mod IMPLEMENTS harness interfaces (IProbe, IStepAction), so its assembly cannot
+    # even be type-scanned until RimWorldTestHarness.dll is loaded — RimWorld loads mod assemblies in
+    # activeMods order, so a bridge listed before the harness dies with a ReflectionTypeLoadException
+    # ("could not resolve ... IProbe") and every one of its probes silently goes unregistered.
+    # A mod declares that need itself, in the About.xml it already ships, so detect it rather than
+    # hardcoding which mod is a bridge — that was the coupling `--mod` set out to remove.
+    if re.search(rf"<(?:packageId|li)>\s*{re.escape(HARNESS)}\s*</(?:packageId|li)>", about, re.I):
+        after.append(pid)
+print(json.dumps({"ids": ids, "after": after}))
 PYEOF
 )" || fail "could not read a packageId from a --mod About/About.xml"
+    MOD_UT_IDS_JSON="$(echo "$MOD_UT_SPLIT_JSON" | jq -c '.ids')"
+    MOD_UT_AFTER_HARNESS_JSON="$(echo "$MOD_UT_SPLIT_JSON" | jq -c '.after')"
     log "Mods under test: $(echo "$MOD_UT_IDS_JSON" | jq -r 'join(", ")')"
+    if [[ "$(echo "$MOD_UT_AFTER_HARNESS_JSON" | jq -r 'length')" != "0" ]]; then
+        log "  loading after the harness (they depend on it): $(echo "$MOD_UT_AFTER_HARNESS_JSON" | jq -r 'join(", ")')"
+    fi
 else
     log "Mods under test: none (harness-only run)."
 fi
@@ -589,7 +609,8 @@ BACKUPS_TAKEN=1
 # ---------------------------------------------------------------------------
 log "--- Step 3: writing minimal ModsConfig.xml ---"
 RIMWORLD="$RIMWORLD" REQUIRED_MODS_JSON="$REQUIRED_MODS_JSON" \
-    MOD_UT_IDS_JSON="$MOD_UT_IDS_JSON" python3 - "$MODSCONFIG" <<'PYEOF'
+    MOD_UT_IDS_JSON="$MOD_UT_IDS_JSON" MOD_UT_AFTER_HARNESS_JSON="$MOD_UT_AFTER_HARNESS_JSON" \
+python3 - "$MODSCONFIG" <<'PYEOF'
 import json, os, re, sys
 
 path = sys.argv[1]
@@ -613,17 +634,25 @@ dlc_ids = [pid for (folder, pid) in dlc_candidates if os.path.isdir(os.path.join
 
 required = json.loads(os.environ.get("REQUIRED_MODS_JSON", "[]"))
 mods_under_test = json.loads(os.environ.get("MOD_UT_IDS_JSON", "[]"))
+after_harness = set(json.loads(os.environ.get("MOD_UT_AFTER_HARNESS_JSON", "[]")))
 
-# The harness goes LAST, after every mod under test, for the reason About.xml's <loadAfter> states:
-# its patches must wrap theirs and its probes must read state those mods have already applied. Mods
-# under test keep the order they were passed in, so a mod plus its probe-bridge assembly land in the
-# order their author asked for rather than one this script invented.
+# The harness goes after the mods under test, for the reason About.xml's <loadAfter> states: its
+# patches must wrap theirs and its probes must read state those mods have already applied. Mods under
+# test keep the order they were passed in, so a mod plus its probe-bridge assembly land in the order
+# their author asked for rather than one this script invented.
 #
-# De-duplicated because a scenario's requiredMods may legitimately name a mod that is also under
-# test, and a packageId listed twice makes RimWorld refuse to boot.
+# The exception is a mod that declares a dependency ON the harness — a probe bridge. It implements
+# harness interfaces, so RimWorld cannot type-scan its assembly until RimWorldTestHarness.dll is
+# loaded, and activeMods order IS assembly load order. Listing such a mod before the harness costs
+# every probe it registers: the whole assembly throws ReflectionTypeLoadException at load and the
+# scenario then fails with "No probe registered named ...", pointing nowhere near the real cause.
+# Note this is not in tension with the paragraph above — assembly LOAD order and Harmony PATCH order
+# are different things, and a bridge registers probes rather than patching anything.
 active = []
 for pid in (["ludeon.rimworld"] + dlc_ids + ["brrainz.harmony"] + required +
-            mods_under_test + ["joof.rimworldtestharness"]):
+            [p for p in mods_under_test if p not in after_harness] +
+            ["joof.rimworldtestharness"] +
+            [p for p in mods_under_test if p in after_harness]):
     if pid not in active:
         active.append(pid)
 
