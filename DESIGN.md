@@ -70,7 +70,9 @@ tested, the live-game plumbing is validated by actually running it.
 - **`Runner/run_test.sh`** — the external driver: launches RimWorld with a scenario, waits for
   completion, gates on the report. Modeled on `MissileGirl/TestMods/run_test.sh`'s proven
   launch/retry/log-wait/cleanup shape, adapted for a lighter single-scenario run and (unlike that
-  harness) real GPU rendering, since screenshots need it.
+  harness) real GPU rendering, since screenshots need it. Refuses to start if another run or a
+  RimWorld session is already live, and scopes its kills and temp files to itself — see "A run defends
+  itself instead of assuming it's alone" below.
 - **`Scenarios/`** — example/reusable `ScenarioSpec` JSON files.
 - **`Fixtures/`** — save files scenarios load from. Not auto-creatable (no headless "new colony"
   API — see below); each one is made manually once. Gitignored.
@@ -195,6 +197,43 @@ its images looked at.
 `ScreenCapture.CaptureScreenshot` needs the game actually rendering a frame, which rules out a
 pure headless/`-batchmode -nographics` launch (the mode `MissileGirl/TestMods/run_test.sh` uses,
 since it only needs Player.log output). `Runner/run_test.sh` launches normally instead.
+
+## A run defends itself instead of assuming it's alone
+
+`Runner/run_test.sh` mutates global machine state — the one `RimWorld/Mods` folder, the one save-data
+dir, the one running game. Originally it assumed exclusivity: fixed `/tmp` backup names, and
+`pkill -9 -x RimWorldLinux` to guarantee teardown. Both broke in practice, and not because of
+parallelism: a run failed confusingly once when a *just-exited* session's shutdown writes landed
+mid-run. Two runs sharing one backup file is worse still — the loser restores the winner's snapshot
+over the user's real `ModsConfig.xml`.
+
+The fix is scoping, not sandboxing. This is a Steam Deck (~4GiB free, one integrated APU); two
+rendering RimWorlds is not a goal, so a run is allowed to *refuse* rather than isolate:
+
+- **Termination is PID-scoped**, TERM then KILL. Name-based killing cannot distinguish our game from
+  the user's, and the user's must win. The escalation is what preserves the old `pkill -9` guarantee
+  that a hung game still gets reaped.
+- **A run guard** — an exclusive `flock`, plus a refusal to start while any `RimWorldLinux` lives —
+  makes overlap impossible instead of merely survivable. Cheaper and more honest than isolating state
+  the machine can't afford to run twice anyway.
+- **Per-run scratch dir** for backups and logs. `Player.log` had to move there too: the runner greps it
+  for `RWTH: harness loaded` / `RWTH: scenario complete`, so sharing it means reading another run's
+  markers as your own.
+
+Save-data isolation is the one piece left opt-in (`RWTH_ISOLATE_SAVEDATA=1`). It uses RimWorld's own
+`-savedatafolder=` arg — `Verse.GenFilePaths.SaveDataFolderPath` consults
+`GenCommandLine.TryGetCommandLineArg("savedatafolder")` before falling back to
+`Application.persistentDataPath` — deliberately *not* `$XDG_CONFIG_HOME`, which UnityPlayer.so
+demonstrably reads but which we could not prove governs this build's `persistentDataPath`. Depending on
+an unproven assumption here is the one failure mode worse than no isolation: a run that appears
+isolated while writing to the user's real config. So the mechanism is first-party, and because it logs
+`Save data folder overridden to <path>`, the runner asserts the game actually used our directory rather
+than hoping. It stays off by default because a fresh save-data root is itself an unvalidated behaviour
+change (no `Screenshots/`, empty `Saves/`, only the `Config/` we seed).
+
+Per-run bind mounts of `RimWorld/Mods` (`bwrap` is available) are deliberately not attempted:
+`setup_symlink` is idempotent and only removes links it created, which is enough while runs can't
+overlap.
 
 ## Timelapse: video as a clock sweep, not a screen recording
 

@@ -15,12 +15,44 @@ list instead of adding a scenario JSON field, since which mods it activates isn'
 
 Requires the scenario's `Fixtures/<saveFile>` to already exist (see `Fixtures/README.md` — manual,
 not scriptable) and `RimWorldTestHarness`/`CelestialLighting`/`CelestialLighting/TestMod` all built
-(`build.sh` in each). Kills/relaunches RimWorldLinux and temporarily swaps
+(`build.sh` in each). Launches RimWorldLinux and temporarily swaps
 `ModsConfig.xml`/`Saves/autostart.rws` — both backed up and restored on exit (`--no-teardown` to
 skip cleanup for post-mortem debugging).
 
 `reports/` (gitignored) holds timestamped `ScenarioReport` JSON per run, plus any screenshots the
 scenario captured.
+
+## One run at a time (issue #6)
+
+The run mutates global machine state, so it defends itself rather than trusting that it is alone:
+
+- **It refuses to start** if any `RimWorldLinux` is already running, or if another `run_test.sh` holds
+  the run lock (`/tmp/rwth-run-<uid>.lock`, an exclusive `flock` held for the life of the script). Both
+  are hard failures with a message, not waits. Close the game, or wait for the other run.
+- **It only ever kills the game it started**, by PID — SIGTERM, escalating to SIGKILL after 10s. It no
+  longer `pkill`s by name, so your own session survives.
+- **Per-run scratch dir** `/tmp/rwth-run-<timestamp>-<pid>/` holds the `ModsConfig`/`autostart`
+  backups, this run's `Player.log`, and the game's stderr. Note `Player.log` moved here from the game
+  config dir: the script greps it for progress markers, so it cannot be shared. The dir is removed on
+  a clean teardown unless logs are worth keeping; `--no-teardown` always keeps it.
+
+`--print-config` prints every path the run would use and exits without launching, locking, or creating
+anything — handy to confirm two invocations really are isolated.
+
+Overridable: `RWTH_CONFIG_DIR` (game save-data root), `RWTH_RUN_TMP_DIR`, `RWTH_LOCK_FILE`.
+
+### `RWTH_ISOLATE_SAVEDATA=1` — opt-in, not yet validated by a live run
+
+Gives the run its own save-data root (`<run scratch>/savedata`, seeded with a copy of the real
+`Config/`) instead of mutating the user's, via RimWorld's own `-savedatafolder=` command-line arg
+(`Verse.GenFilePaths.SaveDataFolderPath`). The run then **asserts** that `Player.log` contains
+`Save data folder overridden to <our dir>` and fails loudly if it does not, so it cannot quietly fall
+back to the real config dir.
+
+Off by default because a fresh root is a real behaviour change — RimWorld sees no `Screenshots/`, an
+empty `Saves/`, and only the `Config/` we seed — and no live run has confirmed the game boots happily
+that way. Turn it on deliberately, expect to debug it, and note that scenario screenshots are
+unaffected (they are written next to the report in `reports/`).
 
 ## Two verification modes, one scenario format
 
