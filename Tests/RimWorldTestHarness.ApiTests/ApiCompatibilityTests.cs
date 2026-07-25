@@ -855,6 +855,106 @@ public class ApiCompatibilityTests
         Assert.That(getter, Is.Not.Null, "Find.CameraDriver getter no longer exists — LookAt can't reach the camera");
     }
 
+    // --- Mid-session save reload (Mod/FixtureReloader.cs) ---
+    //
+    // Running several scenarios in one game load reloads the save between the ones that mutated the
+    // map, because nothing else can undo a WipeMode.Vanish spawn or a repainted terrain grid. That is
+    // exactly what vanilla's own in-game Load Game does, and the whole chain matters: LoadGame(string)
+    // queues a long event that installs a fresh Game with InitData.gameToLoad set and reloads the
+    // "Play" scene, where Root_Play.Start() picks gameToLoad up. See DESIGN.md, "Batching scenarios
+    // into one load".
+
+    [Test]
+    public void GameDataSaveLoader_LoadGame_StringOverloadExists()
+    {
+        var type = GetType(_game, "Verse.GameDataSaveLoader");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "LoadGame" &&
+            m.Parameters.Count == 1 &&
+            m.Parameters[0].ParameterType.FullName == "System.String");
+        Assert.That(method, Is.Not.Null,
+            "GameDataSaveLoader.LoadGame(string) no longer exists — Mod/FixtureReloader.cs can't reload the fixture between scenarios");
+    }
+
+    [Test]
+    public void GenFilePaths_FilePathForSavedGame_Exists()
+    {
+        var type = GetType(_game, "Verse.GenFilePaths");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "FilePathForSavedGame" &&
+            m.Parameters.Count == 1 &&
+            m.Parameters[0].ParameterType.FullName == "System.String");
+        Assert.That(method, Is.Not.Null,
+            "GenFilePaths.FilePathForSavedGame(string) no longer exists — Mod/FixtureReloader.cs can't pre-check that the save it is about to reload exists, so a missing save would surface as a timeout instead of an error");
+    }
+
+    // Whether the reload actually happened is decided by Current.Game's identity changing: for a frame
+    // after LoadGame the queued long event isn't current yet, so ProgramState/CurrentMap still describe
+    // the pre-reload world. Without a settable Current.Game there is nothing for vanilla to replace and
+    // that postcondition would be meaningless.
+    [Test]
+    public void Current_Game_GetterAndSetterExist()
+    {
+        var type = GetType(_game, "Verse.Current");
+        Assert.That(type, Is.Not.Null);
+        var property = type!.Properties.SingleOrDefault(p => p.Name == "Game");
+        Assert.Multiple(() =>
+        {
+            Assert.That(property?.GetMethod, Is.Not.Null,
+                "Current.Game getter no longer exists — ScenarioDriver.ReloadFinished can't tell a finished reload from one that never started");
+            Assert.That(property?.SetMethod, Is.Not.Null,
+                "Current.Game setter no longer exists — vanilla's load path replaced the Game instance through it, which is the signal ScenarioDriver.ReloadFinished watches for");
+        });
+    }
+
+    // Root_Play.Start()'s gameToLoad branch is what actually performs a mid-session reload after the
+    // scene reloads. We never call it, but the reload does nothing without it.
+    [Test]
+    public void SavedGameLoaderNow_LoadGameFromSaveFileNow_Exists()
+    {
+        var type = GetType(_game, "Verse.SavedGameLoaderNow");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "LoadGameFromSaveFileNow" &&
+            m.Parameters.Count == 1 &&
+            m.Parameters[0].ParameterType.FullName == "System.String");
+        Assert.That(method, Is.Not.Null,
+            "SavedGameLoaderNow.LoadGameFromSaveFileNow(string) no longer exists — the reloaded Play scene would have nothing to load the save with");
+    }
+
+    // Game.LoadGame is what sets ProgramState.MapInitializing on the reload path, which is what makes
+    // the readiness gate re-arm per load rather than reporting the pre-reload world as ready.
+    [Test]
+    public void Game_LoadGame_Exists()
+    {
+        var type = GetType(_game, "Verse.Game");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m => m.Name == "LoadGame" && m.Parameters.Count == 0);
+        Assert.That(method, Is.Not.Null,
+            "Game.LoadGame() no longer exists — the mid-suite reload path is gone");
+    }
+
+    // --- Soft reset between scenarios (Mod/WorldStateReset.cs) ---
+    //
+    // Reading the camera back is new: LookAt only ever set it before, so nothing needed a getter. A
+    // suite has to restore it between scenarios that moved it.
+
+    [Test]
+    public void CameraDriver_ReadbackMembersExist()
+    {
+        var type = GetType(_game, "Verse.CameraDriver");
+        Assert.That(type, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            Assert.That(type!.Properties.SingleOrDefault(p => p.Name == "RootSize")?.GetMethod, Is.Not.Null,
+                "CameraDriver.RootSize getter no longer exists — WorldStateReset can't record the zoom to restore between scenarios");
+            Assert.That(type.Properties.SingleOrDefault(p => p.Name == "MapPosition")?.GetMethod, Is.Not.Null,
+                "CameraDriver.MapPosition getter no longer exists — WorldStateReset can't record the camera cell to restore between scenarios");
+        });
+    }
+
     // --- helpers ---
 
     private static TypeDefinition? GetType(ModuleDefinition module, string fullName) =>

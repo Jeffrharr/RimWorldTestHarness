@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using HarmonyLib;
 using RimWorldTestHarness.Shared;
 using Verse;
@@ -6,11 +7,30 @@ using Verse;
 namespace RimWorldTestHarness.Mod;
 
 // Dev-only, opt-in: this mod does nothing in normal play. It only activates when the Runner
-// launches RimWorld with RWTH_SCENARIO set, so accidentally leaving this mod enabled in a
-// player's normal mod list is harmless.
+// launches RimWorld with RWTH_SCENARIO or RWTH_SUITE set, so accidentally leaving this mod enabled in
+// a player's normal mod list is harmless.
 [StaticConstructorOnStartup]
 public static class HarnessMod
 {
+    // One scenario, one boot, bare ScenarioReport on disk — the original mode, still the fallback.
+    private const string EnvScenario = "RWTH_SCENARIO";
+
+    // Path to a suite list file (see Shared/SuiteList.cs): several scenarios in ONE boot, SuiteReport
+    // on disk. Mutually exclusive with RWTH_SCENARIO and takes precedence if both are set, because a
+    // suite is the more specific request.
+    private const string EnvSuite = "RWTH_SUITE";
+
+    private const string EnvReport = "RWTH_REPORT";
+
+    // auto | always | never — see Shared/SuitePlan.cs. Suite runs only.
+    private const string EnvIsolation = "RWTH_ISOLATION";
+
+    // Save name (no extension, no path) the driver reloads between scenarios that need real isolation.
+    // Runner/run_test.sh sets it to "autostart" in fixture mode and leaves it UNSET in -quicktest mode,
+    // where the colony is generated at boot and no save exists — the planner then refuses to pretend a
+    // map-mutating suite was isolated. Suite runs only.
+    private const string EnvReloadSave = "RWTH_RELOAD_SAVE";
+
     static HarnessMod()
     {
         new Harmony("joof.rimworldtestharness").PatchAll();
@@ -20,22 +40,54 @@ public static class HarnessMod
         // retry" from "died after — real crash, surface it".
         Log.Message("RWTH: harness loaded");
 
-        string? scenarioPath = Environment.GetEnvironmentVariable("RWTH_SCENARIO");
-        if (string.IsNullOrEmpty(scenarioPath))
+        string? suitePath = Read(EnvSuite);
+        string? scenarioPath = Read(EnvScenario);
+        if (suitePath == null && scenarioPath == null)
             return;
 
-        string? reportPath = Environment.GetEnvironmentVariable("RWTH_REPORT");
-        if (string.IsNullOrEmpty(reportPath))
+        string? reportPath = Read(EnvReport);
+        if (reportPath == null)
         {
-            Log.Error("[RimWorldTestHarness] RWTH_SCENARIO set but RWTH_REPORT is not — scenario will not run.");
+            Log.Error($"[RimWorldTestHarness] {EnvScenario}/{EnvSuite} set but {EnvReport} is not — nothing will run.");
             return;
         }
 
-        // ScenarioDriver.Begin sets ScenarioDriver.Active synchronously, before any scene has
-        // loaded — that's what makes Patch_ForceDevMode active in time for
-        // Verse.Root_Entry.Start()'s autostart-save check, which runs later in the same boot
-        // sequence. See DESIGN.md for why that ordering matters.
-        ScenarioSpec spec = ScenarioSpecLoader.LoadFromFile(scenarioPath);
-        ScenarioDriver.Begin(spec, reportPath);
+        // Both Begin* calls set ScenarioDriver.Active synchronously, before any scene has loaded —
+        // that's what makes Patch_ForceDevMode active in time for Verse.Root_Entry.Start()'s
+        // autostart-save check, which runs later in the same boot sequence. See DESIGN.md for why that
+        // ordering matters.
+        if (suitePath != null)
+            BeginSuite(suitePath, reportPath);
+        else
+            ScenarioDriver.Begin(ScenarioSpecLoader.LoadFromFile(scenarioPath!), reportPath);
+    }
+
+    private static void BeginSuite(string suitePath, string reportPath)
+    {
+        List<string> launchErrors = new List<string>();
+
+        SuiteSpec suite = ScenarioSpecLoader.LoadSuiteFromFile(suitePath);
+        launchErrors.AddRange(suite.LoadErrors);
+
+        // A malformed policy is an error rather than a silent fall back to the default: a run that
+        // isolated less than it was asked to looks exactly like one that isolated correctly.
+        if (!SuitePlanner.TryParsePolicy(Read(EnvIsolation), out IsolationPolicy policy, out string? policyError))
+            launchErrors.Add($"{EnvIsolation}: {policyError}");
+
+        string? reloadSaveName = Read(EnvReloadSave);
+        SuitePlan plan = SuitePlanner.Plan(suite.Scenarios, policy, reloadAvailable: reloadSaveName != null);
+
+        Log.Message($"RWTH: suite of {suite.Scenarios.Count} scenario(s), isolation={policy}, " +
+                    $"reloadSave={reloadSaveName ?? "(none)"}");
+
+        ScenarioDriver.BeginSuite(suite.Scenarios, plan, reportPath, reloadSaveName, launchErrors);
+    }
+
+    // Treats empty exactly like unset, so an env var that a shell expanded to nothing doesn't put the
+    // harness into a mode with a blank path in it.
+    private static string? Read(string name)
+    {
+        string? value = Environment.GetEnvironmentVariable(name);
+        return string.IsNullOrEmpty(value) ? null : value;
     }
 }
