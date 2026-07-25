@@ -49,7 +49,18 @@ RIMWORLD_STDERR="/tmp/rimworld_rwth_stderr.log"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"                       # RimWorldTestHarness/
-CELESTIAL_DIR="$(cd "$REPO_DIR/../CelestialLighting" && pwd)"  # sibling repo
+# The mod under test normally sits in a sibling repo, but that only holds for the canonical checkout:
+# a git worktree (the mandated workflow when several agents share this repo set) lives under
+# .worktrees/, where no sibling CelestialLighting exists. Overridable so a worktree can still do a live
+# run against the real mod instead of dying on a bare `cd`.
+CELESTIAL_DIR_RAW="${RWTH_CELESTIAL_DIR:-$REPO_DIR/../CelestialLighting}"
+if [[ ! -d "$CELESTIAL_DIR_RAW" ]]; then
+    echo "[run_test] FAIL: mod-under-test dir not found at $CELESTIAL_DIR_RAW." >&2
+    echo "[run_test]   Set RWTH_CELESTIAL_DIR to CelestialLighting's checkout — needed when running" >&2
+    echo "[run_test]   from a git worktree, which has no sibling copy." >&2
+    exit 1
+fi
+CELESTIAL_DIR="$(cd "$CELESTIAL_DIR_RAW" && pwd)"
 TESTMOD_DIR="$CELESTIAL_DIR/TestMod"
 REPORTS_DIR="$SCRIPT_DIR/reports"
 
