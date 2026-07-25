@@ -21,4 +21,9 @@ public sealed class ScenarioReport
     public List<ProbeCheckResult> ProbeChecks { get; set; } = new();
     public List<string> ScreenshotPaths { get; set; } = new();
     public List<string> Errors { get; set; } = new();
+
+    // Rubrics emitted for an LLM judge, with their verdicts once someone has answered them. Only a
+    // confident FAIL affects Pass (see VisionGate); an unjudged one leaves the run provisionally
+    // green, which is why the runner prints the pending count rather than rounding it off.
+    public List<VisionAssert> VisionAsserts { get; set; } = new();
 }

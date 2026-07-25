@@ -39,6 +39,19 @@ public static class ReportComparer
     public static bool AllPass(IReadOnlyList<ProbeCheckResult> checks, IReadOnlyList<string> errors) =>
         errors.Count == 0 && AllPass(checks);
 
+    // The same gate plus the vision tier. Only a CONFIDENT FAIL from a judge blocks — an unjudged
+    // rubric leaves the run provisionally green rather than failing it, because a soft gate that
+    // red-builds on "nobody has looked yet" would be turned off within a week.
+    //
+    // That leniency is only safe because the pending count is reported out loud (VisionGate.Describe,
+    // printed by run_test.sh). A silent provisional pass would be precisely the green-run-means-less
+    // failure the two-arg overload above exists to prevent.
+    public static bool AllPass(
+        IReadOnlyList<ProbeCheckResult> checks,
+        IReadOnlyList<string> errors,
+        IReadOnlyList<VisionAssert> visionAsserts) =>
+        AllPass(checks, errors) && !VisionGate.AnyBlocks(visionAsserts);
+
     // The same argument one level up, for a multi-scenario run. Three conditions, each guarding a
     // distinct way a suite could look green while having verified less than it was asked to:
     //

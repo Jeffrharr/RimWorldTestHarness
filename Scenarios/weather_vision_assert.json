@@ -1,0 +1,27 @@
+{
+  "name": "weather_vision_assert",
+  "saveFile": "minimal_colony.rws",
+  "steps": [
+    { "type": "SetTile", "args": { "latitude": "55" } },
+    { "type": "SetSeason", "args": { "dayOfYear": "15" } },
+    { "type": "SetTime", "args": { "hour": "12" } },
+    { "type": "LookAt", "args": { "zoom": "25" } },
+
+    { "type": "SetWeather", "args": { "weatherDef": "Clear", "instant": "true" } },
+    { "type": "Wait", "args": { "frames": "5" } },
+    { "type": "Screenshot", "args": { "fileName": "weather_clear.png" } },
+
+    { "type": "SetWeather", "args": { "weatherDef": "Rain", "instant": "true" } },
+    { "type": "Wait", "args": { "frames": "5" } },
+    { "type": "Screenshot", "args": { "fileName": "weather_rain.png" } },
+
+    { "type": "Assert", "args": {
+        "kind": "vision",
+        "id": "weather_visibly_changed",
+        "images": "weather_clear.png,weather_rain.png",
+        "prompt": "Two frames of the same RimWorld colony at midday, same camera, taken seconds apart. The FIRST was captured under Clear weather, the SECOND under Rain. Confirm all of: (a) the second frame is noticeably darker and less saturated than the first; (b) the second frame shows rain — diagonal streaks or a wet sheen over the ground; (c) both frames show a normally lit map, not a black screen, a missing map, or an obviously broken render.",
+        "expect": "second frame is darker, desaturated, and visibly raining",
+        "confidenceGate": "0.7"
+    } }
+  ]
+}

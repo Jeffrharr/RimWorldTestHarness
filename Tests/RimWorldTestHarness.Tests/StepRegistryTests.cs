@@ -24,7 +24,7 @@ public class StepRegistryTests
             StepArgs.FastForwardType, StepArgs.WaitType, StepArgs.ProbeType,
             StepArgs.ScreenshotType, StepArgs.SetFeatureType, StepArgs.StartConditionType,
             StepArgs.PlaceThingsType, StepArgs.SetTerrainType, StepArgs.LookAtType,
-            StepArgs.TimelapseType, "SetWeather",
+            StepArgs.TimelapseType, "SetWeather", "Assert",
         };
 
         Assert.That(StepRegistry.KnownTypes, Is.EquivalentTo(expected));

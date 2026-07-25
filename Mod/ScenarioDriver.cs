@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using RimWorldTestHarness.Mod.Steps;
 using RimWorldTestHarness.Shared;
 using UnityEngine;
 using Verse;
@@ -60,6 +61,11 @@ public static class ScenarioDriver
     private static int _scenarioIndex;
     private static int _stepIndex;
     private static int _flushFramesRemaining;
+
+    // Set after a Screenshot; cleared once the PNG is on disk (or the budget runs out). See
+    // WaitingForScreenshotFile.
+    private static string? _pendingScreenshotPath;
+    private static int _screenshotWaitBudget;
     private static int _settleFramesAfterLoad;
     private static int _fastForwardTargetTicksGame;
     private static bool _waitingForFastForward;
@@ -154,6 +160,9 @@ public static class ScenarioDriver
             return;
         }
 
+        if (WaitingForScreenshotFile())
+            return;
+
         if (_waitingForFastForward)
         {
             if (Find.TickManager.TicksGame < _fastForwardTargetTicksGame)
@@ -183,6 +192,9 @@ public static class ScenarioDriver
         // Give the game a few frames after FinalizeInit before the first step observes it. Cheap
         // insurance on top of the ProgramState gate, reusing the existing flush counter.
         _flushFramesRemaining = _settleFramesAfterLoad;
+        // Everything logged up to here is load noise, not this scenario's doing. Marked after the
+        // load rather than at Begin so a mid-suite reload's own chatter is excluded too.
+        StepHelpers.MarkLogBaseline();
         // Re-captured on every load, not just the first: a reload returns the world to the save's own
         // state, which is precisely what a later soft reset should restore to.
         _baseline = WorldStateReset.Capture();
@@ -216,6 +228,35 @@ public static class ScenarioDriver
     // over the course of one load, so the identity always changes.
     private static bool ReloadFinished() =>
         _gameBeforeReload == null || !ReferenceEquals(_gameBeforeReload, Current.Game);
+
+    // Holds the run after a Screenshot until the PNG is actually on disk, so a later step (an Assert
+    // naming it, or the report itself) never reads a file that hasn't landed. The flat frame count
+    // that used to stand in for this was enough for every screenshot except the last one before
+    // something read it — which is exactly the case a vision assert creates.
+    //
+    // A screenshot that never lands is recorded as an ERROR rather than waited on forever: the run
+    // would otherwise hang, and reporting a screenshot path for a file that does not exist is the
+    // green-run-means-less failure in miniature.
+    private static bool WaitingForScreenshotFile()
+    {
+        if (_pendingScreenshotPath == null)
+            return false;
+
+        if (StepHelpers.ScreenshotComplete(_pendingScreenshotPath))
+        {
+            _pendingScreenshotPath = null;
+            return false;
+        }
+
+        if (_screenshotWaitBudget-- > 0)
+            return true;
+
+        CurrentReport.Errors.Add(
+            $"screenshot never reached disk: {_pendingScreenshotPath} " +
+            $"(waited {StepHelpers.ScreenshotWaitBudgetFrames} frames)");
+        _pendingScreenshotPath = null;
+        return false;
+    }
 
     private static void RunNextStep()
     {
@@ -287,7 +328,21 @@ public static class ScenarioDriver
         }
 
         if (outcome.ScreenshotPath != null)
+        {
             CurrentReport.ScreenshotPaths.Add(outcome.ScreenshotPath);
+            _pendingScreenshotPath = outcome.ScreenshotPath;
+            _screenshotWaitBudget = StepHelpers.ScreenshotWaitBudgetFrames;
+        }
+
+        if (outcome.VisionAssert is VisionAssert assert)
+        {
+            // The step index is the default id because only the driver knows it, and a verdict
+            // written back later has to be able to name exactly which assert it answers.
+            if (string.IsNullOrEmpty(assert.Id))
+                assert.Id = $"{CurrentReport.ScenarioName}#{CurrentReport.VisionAsserts.Count}";
+
+            CurrentReport.VisionAsserts.Add(assert);
+        }
 
         if (outcome.WaitFrames > 0)
             _flushFramesRemaining = outcome.WaitFrames;
@@ -305,8 +360,12 @@ public static class ScenarioDriver
         // Errors count toward Pass, not just probe checks: a scenario whose steps failed verified less
         // than it claims to, and with no Probe step at all an errors-ignoring gate reports Pass over
         // an empty check list. See ReportComparer's two-arg overload.
-        report.Pass = ReportComparer.AllPass(report.ProbeChecks, report.Errors);
-        Log.Message($"RWTH: scenario finished: {report.ScenarioName} pass={report.Pass}");
+        report.Pass = ReportComparer.AllPass(report.ProbeChecks, report.Errors, report.VisionAsserts);
+        // The vision summary rides along on the same line so a provisional pass says so in the log
+        // too, not only in the report — the log is what someone greps when a run "went green".
+        string vision = VisionGate.Describe(report.VisionAsserts);
+        string visionSuffix = vision.Length > 0 ? $" vision=[{vision}]" : "";
+        Log.Message($"RWTH: scenario finished: {report.ScenarioName} pass={report.Pass}{visionSuffix}");
 
         _scenarioIndex++;
         if (_scenarioIndex >= _specs.Count)
@@ -320,13 +379,18 @@ public static class ScenarioDriver
 
     // Applies the planned isolation, then arms the next scenario. Only ever called for entries after
     // the first — the first scenario's isolation is the fresh load itself.
-    // Both _flushFramesRemaining and _waitingForFastForward are provably already clear here: Tick
-    // satisfies each of them BEFORE it calls RunNextStep, and FinishScenario is only reached from
-    // RunNextStep. They're deliberately not reset defensively, because zeroing a wait that turned out
-    // to be genuine would skip it silently.
+    // _flushFramesRemaining, _pendingScreenshotPath and _waitingForFastForward are all provably clear
+    // here: Tick satisfies each of them BEFORE it calls RunNextStep, and FinishScenario is only
+    // reached from RunNextStep. (WaitingForScreenshotFile clears its field on both exits — the file
+    // landing and the budget running out — so it cannot leak into the next scenario either.) They're
+    // deliberately not reset defensively, because zeroing a wait that turned out to be genuine would
+    // skip it silently.
     private static void StartNextScenario()
     {
         _stepIndex = 0;
+        // Per scenario, so one scenario's warnings never show up in the next one's review packet. A
+        // reload re-marks it again via AdvanceWaitingForMap; marking twice is harmless.
+        StepHelpers.MarkLogBaseline();
 
         IsolationAction action = _plan.Entries[_scenarioIndex].Before;
         Log.Message($"RWTH: starting scenario {_scenarioIndex + 1}/{_specs.Count} " +

@@ -1037,6 +1037,47 @@ public class ApiCompatibilityTests
             "GameCondition.startTick no longer exists — StartCondition's agedHours can't back-date a condition");
     }
 
+    // --- Log buffer (Assert step's log excerpt) ---
+    //
+    // AssertAction reads the game's in-memory log rather than Player.log on disk, because the file is
+    // owned by Unity and written concurrently. That makes these members load-bearing for the vision
+    // tier: without them a review packet silently ships with no log evidence at all.
+
+    [Test]
+    public void Log_Messages_GetterExists()
+    {
+        var type = GetType(_game, "Verse.Log");
+        Assert.That(type, Is.Not.Null);
+        var getter = type!.Properties.SingleOrDefault(p => p.Name == "Messages")?.GetMethod;
+        Assert.That(getter, Is.Not.Null, "Verse.Log.Messages no longer exists — Assert can't capture a log excerpt");
+    }
+
+    [Test]
+    public void LogMessage_TextTypeAndRepeats_FieldsExist()
+    {
+        var type = GetType(_game, "Verse.LogMessage");
+        Assert.That(type, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            Assert.That(type!.Fields.SingleOrDefault(f => f.Name == "text"), Is.Not.Null,
+                "LogMessage.text no longer exists");
+            Assert.That(type.Fields.SingleOrDefault(f => f.Name == "type"), Is.Not.Null,
+                "LogMessage.type no longer exists — Assert can't filter to warnings and errors");
+            Assert.That(type.Fields.SingleOrDefault(f => f.Name == "repeats"), Is.Not.Null,
+                "LogMessage.repeats no longer exists");
+        });
+    }
+
+    [Test]
+    public void LogMessageType_StillHasMessageWarningError()
+    {
+        var type = GetType(_game, "Verse.LogMessageType");
+        Assert.That(type, Is.Not.Null);
+        var names = type!.Fields.Where(f => f.IsStatic).Select(f => f.Name).ToList();
+        Assert.That(names, Is.SupersetOf(new[] { "Message", "Warning", "Error" }),
+            "LogMessageType's members changed — Assert's warning/error filter would silently misclassify");
+    }
+
     // --- helpers ---
 
     private static TypeDefinition? GetType(ModuleDefinition module, string fullName) =>

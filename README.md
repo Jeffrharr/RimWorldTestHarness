@@ -11,9 +11,12 @@ Two kinds of verification share one scenario format:
   of an expected value. This is a real pass/fail gate: the runner exits non-zero when it fails.
 - **Screenshots** — a scenario captures rendered frames (optionally a whole timelapse, stitched to
   video) for a human or an AI agent to review afterward.
+- **Vision asserts** — a scenario declares a *rubric* for an LLM judge, and the run emits it with the
+  named screenshots and the game's recent warnings/errors attached. This catches what a probe cannot:
+  a formula returning the right number while nothing reaches the screen.
 
-Neither mode excludes the other. A single scenario can pin a number *and* leave you images of the
-same moment.
+None of these excludes the others. A single scenario can pin a number, leave you images of the same
+moment, and say in words what those images should show.
 
 > **Status:** working end-to-end. Single scenarios and screenshots/timelapses are confirmed against
 > live runs; the mid-suite save reload is implemented and offline-tested but not yet live-verified.
@@ -142,6 +145,7 @@ this repo's `Scenarios/`.
 | `Probe` | `probeName`, `expectedValue`, `tolerance` | `probeName` must match a registered `IProbe.Name`. This is what decides pass/fail. |
 | `Screenshot` | `fileName`, `hideUi` | Written next to the report. `hideUi` defaults to `true` (blanks the HUD via RimWorld's screenshot mode). |
 | `SetFeature` | `featureName`, `enabled` | Flips a feature flag your mod registered. The point is A/B: screenshot with an effect off, flip it on, screenshot again — in one boot. |
+| `Assert` | `kind`, `images`, `prompt`, `expect`, `confidenceGate`, `logLines` | `kind: vision` — a rubric for an LLM judge over named screenshots plus the game's recent warnings/errors. Soft gate: only a *confident* fail blocks. See `Runner/README.md`, "Vision asserts". |
 
 **Scene setup** — build something worth looking at, at runtime, instead of authoring it into the
 save. Shared by `PlaceThings` / `SetTerrain` / `LookAt`: `anchor` (`"center"` by default, or absolute

@@ -101,6 +101,69 @@ empty `Saves/`, and only the `Config/` we seed — and no live run has confirmed
 that way. Turn it on deliberately, expect to debug it, and note that scenario screenshots are
 unaffected (they are written next to the report in `reports/`).
 
+## Vision asserts: giving an LLM a rubric
+
+A `Probe` checks that a formula returns the right number. It cannot check that the number reached the
+screen — CelestialLighting #15 shipped with unit tests *and* a probe both green while the effect
+rendered nothing. An `Assert` step with `kind: vision` closes that gap: it declares a rubric plus the
+evidence to answer it, and the run emits that as a review packet.
+
+```json
+{ "type": "Assert", "args": {
+    "kind": "vision",
+    "images": "weather_clear.png,weather_rain.png",
+    "prompt": "Two frames, same camera. The SECOND was captured under Rain. Confirm it is darker and desaturated, shows visible rain, and that neither frame is a black screen or broken render.",
+    "expect": "second frame is darker, desaturated, and visibly raining",
+    "confidenceGate": "0.7"
+} }
+```
+
+`images` names `fileName`s captured by earlier `Screenshot` steps in the same scenario — a name that
+was never captured fails the step rather than sending the judge a packet it cannot answer. For a
+timelapse, name whichever frames matter (`daycycle_0000.png`, …); the judge reads still frames, not
+video. Each assert also carries an excerpt of the game's **warnings and errors** from `Verse.Log`,
+because a missing def or an exception thrown mid-step is invisible in a screenshot and obvious in the
+log.
+
+The excerpt is scoped to the current scenario, not the session — otherwise it fills with unrelated
+startup warnings from whatever else is in the mod list, and a judge skims past evidence that was
+supposed to be the point. **An empty `LogExcerpt` therefore means "this scenario logged nothing",
+which is a clean result, not a missing capture.** Set `logLines: 0` to disable it outright.
+
+**The harness does not call an LLM.** It emits the packet into the report; a Claude session or the
+RimWorldDevMCP channel judges it and writes a verdict back. That keeps the gate free of an API key, a
+per-run cost, and a network dependency.
+
+### What blocks a run
+
+| Verdict | Outcome |
+|---|---|
+| none yet | **pending** — does not block; the run is *provisionally* green |
+| fail, confidence ≥ gate | **blocked** — fails the run |
+| fail, confidence < gate | needs a human — does not block |
+| pass, confidence < gate | needs a human — an unsure pass is not an approval |
+| pass, confidence ≥ gate | passed |
+
+Only a *confident* fail red-builds. An LLM judging a screenshot is a fallible reviewer, and a gate
+that fails on its uncertain opinion gets switched off within a week — at which point it protects
+nothing. A confident "this is broken" is exactly the signal a probe-green run was lying.
+
+The leniency is only safe because the shortfall is stated out loud: `run_test.sh` prints every
+assert's state and a `NOTE: N vision assert(s) awaiting review — this result is provisional`. A
+silent provisional pass would be the green-run-means-less failure the rest of this repo is built to
+avoid.
+
+### Writing a verdict back
+
+Verdicts live in the report JSON, under each assert's `Verdict`:
+
+```json
+"Verdict": { "Pass": false, "Confidence": 0.9, "Reason": "second frame is identical to the first — no rain visible" }
+```
+
+`Reason` is not optional in practice: the point of recording a verdict is that the next person
+doesn't have to re-derive it.
+
 ## Two verification modes, one scenario format
 
 A `ScenarioSpec` can mix `Probe` steps (numeric pass/fail — the spec-driven gate,

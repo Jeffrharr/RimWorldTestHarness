@@ -835,8 +835,37 @@ def print_scenario(scenario, indent="  "):
     else:
         for path in shots:
             print(f"[run_test]{indent}  screenshot: {path}")
+    print_vision(scenario, indent)
     for err in scenario.get("Errors", []):
         print(f"[run_test]{indent}  ERROR: {err}")
+
+
+# A vision assert nobody has judged does not fail the run (see Shared/VisionGate.cs), so it has to be
+# impossible to miss here instead. A run that prints a bare "pass=True" while carrying unanswered
+# rubrics would be a green result meaning less than it looks like.
+def print_vision(scenario, indent):
+    asserts = scenario.get("VisionAsserts", [])
+    if not asserts:
+        return
+
+    pending = [a for a in asserts if a.get("Verdict") is None]
+    for a in asserts:
+        verdict = a.get("Verdict")
+        if verdict is None:
+            state = "PENDING REVIEW"
+            detail = a.get("Expect") or a.get("Prompt", "")[:60]
+        else:
+            confident = verdict.get("Confidence", 0) >= a.get("ConfidenceGate", 0.7)
+            if not confident:
+                state = "NEEDS A HUMAN"
+            else:
+                state = "PASS" if verdict.get("Pass") else "FAIL"
+            detail = f"{verdict.get('Reason', '')} (confidence={verdict.get('Confidence')})"
+        print(f"[run_test]{indent}  vision {a.get('Id')}: {state} — {detail}")
+
+    if pending:
+        print(f"[run_test]{indent}  NOTE: {len(pending)} vision assert(s) awaiting review — "
+              f"this result is provisional. See Runner/README.md, 'Vision asserts'.")
 
 
 if "Scenarios" not in report:

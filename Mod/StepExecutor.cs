@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using RimWorldTestHarness.Mod.Steps;
+using RimWorldTestHarness.Shared;
 using RimWorldTestHarness.Shared.Steps;
 using Verse;
 
@@ -18,6 +19,7 @@ public sealed class StepOutcome
     public float? ForcedLatitude;   // SetTile: driver copies into HarnessRuntime.ForcedLatitude
     public float? ProbeValue;       // Probe: the raw reading (caller decides how to interpret it)
     public string? ScreenshotPath;  // Screenshot: absolute path the PNG is being written to
+    public VisionAssert? VisionAssert;  // Assert(kind=vision): the rubric+evidence packet to record
     public string? Error;           // non-null => the action failed; nothing else is meaningful
 
     // Post-effect waits the driver must satisfy before the NEXT command runs.

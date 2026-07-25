@@ -194,6 +194,73 @@ exclusions were always safety decisions rather than gaps — the companion chann
 player's colony, and `PlaceThings` spawns with `WipeMode.Vanish` — and a default of "no" means a new
 step cannot become live-callable by being added to one list and forgotten in another.
 
+## Vision asserts: a rubric an LLM can judge
+
+The third verification tier, alongside the numeric probe gate and bare screenshots. A scenario
+declares in words what its images should show; the run emits that rubric with the images and the
+game's recent warnings/errors attached; a judge answers later.
+
+It exists because the other two tiers can both be green while the thing under test is broken.
+CelestialLighting #15 shipped with unit tests AND a numeric probe passing while the effect rendered
+nothing at all — only a by-hand off/on comparison caught it. A probe proves a formula returns the
+right number. Nothing proved the number reached the screen.
+
+### The harness does not call an LLM
+
+The run emits a packet; a Claude session or the RimWorldDevMCP channel writes a verdict back into the
+report. An inline API call was the alternative and was rejected: it would put an API key, a per-run
+cost and a network dependency inside the gate, and it would move the pass/fail decision somewhere it
+could not be unit-tested. Emitting a packet keeps every decision in `Shared/VisionGate.cs`, which is
+pure and offline-tested like the rest of the isolation and comparison logic.
+
+The cost is that a run finishes with rubrics unanswered. That is handled by naming it rather than
+hiding it — see below.
+
+### Only a confident FAIL blocks
+
+| Verdict | Outcome |
+|---|---|
+| none yet | pending — does not block |
+| fail, confidence >= gate | **blocked** |
+| fail, confidence < gate | needs a human |
+| pass, confidence < gate | needs a human |
+| pass, confidence >= gate | passed |
+
+The asymmetry is the whole design. An LLM judging a screenshot is a fallible reviewer, and a gate
+that red-builds on its uncertain opinion gets switched off within a week — at which point it protects
+nothing, which is strictly worse than never having added it. A confident "this is broken", though, is
+exactly the signal that a probe-green run was lying, and that is worth failing over.
+
+A confident vision PASS never rescues a run that failed on a probe or an error. The tier can only
+subtract confidence, never add it.
+
+### Why a provisional pass is allowed to exist
+
+Everywhere else in this repo, unverified reads as failed: an empty suite fails, a scenario whose
+steps all errored fails, an unrecognised step's residue is assumed to be everything. A pending vision
+assert breaks that pattern deliberately, because "nobody has judged this yet" is the NORMAL state
+immediately after a run — there is no judge in the loop yet by design.
+
+The rule is preserved a different way: the shortfall is stated out loud everywhere the result is.
+`VisionGate.Describe` puts it in the report, ScenarioDriver puts it in the Player.log line, and
+run_test.sh prints `NOTE: N vision assert(s) awaiting review — this result is provisional`. A silent
+provisional pass would be the green-run-means-less failure; a loud one is an honest intermediate
+state.
+
+`VisionGate.ReviewComplete` is what a consumer checks to tell "fully gated" from "gated on probes
+alone", since the Pass flag alone cannot express the difference.
+
+### Evidence: images plus the log
+
+The judge gets the named screenshots and an excerpt of the game's own warnings and errors, read from
+`Verse.Log`'s in-memory buffer rather than Player.log on disk (the file is owned by Unity and written
+concurrently; the buffer is already parsed and deduplicated). A missing def or an exception thrown
+mid-step is invisible in a screenshot and obvious in the log, and asking a judge to rule on a picture
+while withholding the stack trace beside it would be daft.
+
+Video is not sent. An mp4 is not consumable by the judge, so a timelapse is reviewed by naming
+whichever frames matter from the PNG sequence the run already keeps.
+
 ## Where probe tests live
 
 `Mod/Probes/IProbe.cs`/`ProbeRegistry.cs` is the *only* thing this repo owns for probes — the
