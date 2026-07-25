@@ -1078,59 +1078,162 @@ public class ApiCompatibilityTests
             "LogMessageType's members changed — Assert's warning/error filter would silently misclassify");
     }
 
-    // --- Animal spawning (Mod/SceneBuilder.cs's SpawnAnimals) ---
+    // --- Pawn spawning (Mod/SceneBuilder.cs's SpawnPawns) ---
     //
-    // The SpawnAnimal step generates a pawn rather than building a thing, so it leans on a different
-    // slice of vanilla than the rest of scene setup. If Ludeon moves any of it, these fail loudly at
-    // build time instead of the step silently spawning nothing and a screenshot showing empty ground.
+    // The SpawnPawn step generates a pawn rather than building a thing, and assigns it a faction,
+    // gender and hediffs, so it leans on a wide slice of vanilla the rest of scene setup never touches.
+    // If Ludeon moves any of it, these fail loudly at build time instead of the step silently spawning
+    // nothing, or spawning a factionless/condition-free pawn that quietly tests less than it claims.
 
-    // PawnGenerator.GeneratePawn(PawnKindDef, Faction, ...) — the convenience overload SpawnAnimals
-    // calls with a null faction to get an unaffiliated wild animal. Pinned by its first two parameter
-    // types; the trailing tile parameter is optional, so a four-or-more-arity overload still binds.
+    // GeneratePawn(PawnGenerationRequest) is the overload SpawnPawns calls (rather than the
+    // (kind, faction) convenience) so it can set FixedGender. Both the method and the request's
+    // gender field are pinned, because losing either silently drops the gender control.
     [Test]
-    public void PawnGenerator_GeneratePawn_KindFactionOverloadExists()
+    public void PawnGenerator_GeneratePawn_RequestOverloadExists()
     {
         var type = GetType(_game, "Verse.PawnGenerator");
         Assert.That(type, Is.Not.Null);
         var method = type!.Methods.SingleOrDefault(m =>
             m.Name == "GeneratePawn" &&
-            m.Parameters.Count >= 2 &&
-            m.Parameters[0].ParameterType.FullName == "Verse.PawnKindDef" &&
+            m.Parameters.Count == 1 &&
+            m.Parameters[0].ParameterType.FullName == "Verse.PawnGenerationRequest");
+        Assert.That(method, Is.Not.Null,
+            "PawnGenerator.GeneratePawn(PawnGenerationRequest) no longer exists — SpawnPawns can't generate a pawn");
+        Assert.That(method!.ReturnType.FullName, Is.EqualTo("Verse.Pawn"),
+            "PawnGenerator.GeneratePawn no longer returns Pawn — SpawnPawns' spawn call would stop compiling");
+    }
+
+    [Test]
+    public void PawnGenerationRequest_KindFactionCtorAndFixedGenderExist()
+    {
+        var type = GetType(_game, "Verse.PawnGenerationRequest");
+        Assert.That(type, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            var ctor = type!.Methods.SingleOrDefault(m =>
+                m.IsConstructor &&
+                m.Parameters.Count >= 2 &&
+                m.Parameters[0].ParameterType.FullName == "Verse.PawnKindDef" &&
+                m.Parameters[1].ParameterType.FullName == "RimWorld.Faction");
+            Assert.That(ctor, Is.Not.Null,
+                "PawnGenerationRequest(PawnKindDef, Faction, ...) no longer exists — SpawnPawns can't build a request");
+            var fixedGender = type!.Properties.SingleOrDefault(p => p.Name == "FixedGender");
+            Assert.That(fixedGender?.SetMethod, Is.Not.Null,
+                "PawnGenerationRequest.FixedGender no longer settable — SpawnPawn's gender arg can't apply");
+            Assert.That(fixedGender!.PropertyType.FullName, Is.EqualTo("System.Nullable`1<Verse.Gender>"),
+                "PawnGenerationRequest.FixedGender changed type — SpawnPawns' ToGender would stop binding");
+        });
+    }
+
+    [Test]
+    public void Gender_MaleAndFemaleMembersExist()
+    {
+        var type = GetType(_game, "Verse.Gender");
+        Assert.That(type, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            foreach (var member in new[] { "Male", "Female" })
+                Assert.That(type!.Fields.SingleOrDefault(f => f.Name == member), Is.Not.Null,
+                    $"Verse.Gender.{member} no longer exists — SpawnPawn's gender arg can't map to it");
+        });
+    }
+
+    // Faction.OfPlayer (player spawns) and the deterministic enemy-faction walk (hostile spawns).
+    [Test]
+    public void Faction_OfPlayerAndHostileWalkMembersExist()
+    {
+        var faction = GetType(_game, "RimWorld.Faction");
+        var manager = GetType(_game, "RimWorld.FactionManager");
+        Assert.That(faction, Is.Not.Null);
+        Assert.That(manager, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            Assert.That(faction!.Properties.SingleOrDefault(p => p.Name == "OfPlayer")?.GetMethod, Is.Not.Null,
+                "Faction.OfPlayer no longer exists — SpawnPawn can't give a pawn the player faction");
+            Assert.That(manager!.Properties.SingleOrDefault(p => p.Name == "AllFactionsListForReading")?.GetMethod,
+                Is.Not.Null,
+                "FactionManager.AllFactionsListForReading no longer exists — the deterministic enemy-faction pick can't iterate");
+            // The flags FirstEnemyFaction filters on: a rename would silently widen or empty the pick.
+            Assert.That(faction!.Fields.SingleOrDefault(f => f.Name == "defeated"), Is.Not.Null,
+                "Faction.defeated no longer exists — enemy-faction filter can't skip defeated factions");
+            Assert.That(faction!.Fields.SingleOrDefault(f => f.Name == "temporary"), Is.Not.Null,
+                "Faction.temporary no longer exists — enemy-faction filter can't skip temporary factions");
+            Assert.That(faction!.Properties.SingleOrDefault(p => p.Name == "Hidden")?.GetMethod, Is.Not.Null,
+                "Faction.Hidden no longer exists — enemy-faction filter can't skip hidden (mechanoid/insect) factions");
+        });
+    }
+
+    // HostileTo is an extension method in FactionUtility, not an instance method on Faction, so it is
+    // pinned where it actually lives.
+    [Test]
+    public void FactionUtility_HostileTo_Exists()
+    {
+        var type = GetType(_game, "RimWorld.FactionUtility");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "HostileTo" &&
+            m.Parameters.Count == 2 &&
+            m.Parameters[0].ParameterType.FullName == "RimWorld.Faction" &&
             m.Parameters[1].ParameterType.FullName == "RimWorld.Faction");
         Assert.That(method, Is.Not.Null,
-            "PawnGenerator.GeneratePawn(PawnKindDef, Faction, ...) no longer exists — SpawnAnimal can't generate a wild animal");
-        Assert.That(method!.ReturnType.FullName, Is.EqualTo("Verse.Pawn"),
-            "PawnGenerator.GeneratePawn no longer returns Pawn — SpawnAnimals' spawn call would stop compiling");
+            "FactionUtility.HostileTo(Faction, Faction) no longer exists — SpawnPawn can't find an enemy faction");
     }
 
-    // PawnKindDef.RaceProps is how SpawnAnimals reaches the race's Animal flag to reject a non-animal
-    // kind. It delegates to the def's ThingDef.race, so both links matter.
+    // Body-part-targeted hediffs resolve against the kind's shared body: PawnKindDef.RaceProps ->
+    // RaceProperties.body (a BodyDef) -> GetPartsWithDef. All three links matter.
     [Test]
-    public void PawnKindDef_RaceProps_GetterExists()
+    public void BodyResolutionChainExists()
     {
-        var type = GetType(_game, "Verse.PawnKindDef");
-        Assert.That(type, Is.Not.Null);
-        Assert.That(type!.Properties.SingleOrDefault(p => p.Name == "RaceProps")?.GetMethod, Is.Not.Null,
-            "PawnKindDef.RaceProps no longer exists — SpawnAnimal can't tell whether a kind is an animal");
+        var pawnKind = GetType(_game, "Verse.PawnKindDef");
+        var raceProps = GetType(_game, "Verse.RaceProperties");
+        var bodyDef = GetType(_game, "Verse.BodyDef");
+        Assert.Multiple(() =>
+        {
+            Assert.That(pawnKind!.Properties.SingleOrDefault(p => p.Name == "RaceProps")?.GetMethod, Is.Not.Null,
+                "PawnKindDef.RaceProps no longer exists — SpawnPawn can't reach the kind's body");
+            var body = raceProps!.Fields.SingleOrDefault(f => f.Name == "body");
+            Assert.That(body, Is.Not.Null, "RaceProperties.body no longer exists — body-part hediffs can't resolve");
+            Assert.That(body!.FieldType.FullName, Is.EqualTo("Verse.BodyDef"),
+                "RaceProperties.body changed type — SpawnPawns' GetPartsWithDef call would stop binding");
+            var getParts = bodyDef!.Methods.SingleOrDefault(m =>
+                m.Name == "GetPartsWithDef" && m.Parameters.Count == 1 &&
+                m.Parameters[0].ParameterType.FullName == "Verse.BodyPartDef");
+            Assert.That(getParts, Is.Not.Null,
+                "BodyDef.GetPartsWithDef(BodyPartDef) no longer exists — SpawnPawn can't target a body part");
+            Assert.That(getParts!.ReturnType.FullName, Is.EqualTo("System.Collections.Generic.List`1<Verse.BodyPartRecord>"),
+                "BodyDef.GetPartsWithDef no longer returns List<BodyPartRecord> — SpawnPawns' FirstOrDefault would stop binding");
+        });
     }
 
-    // RaceProperties.Animal is the exact bool SpawnAnimals gates on. A rename would turn every kind
-    // into "not an animal" and the step would reject every spawn it is asked for.
+    // Applying a hediff: pawn.health (a Pawn_HealthTracker), AddHediff returning the installed Hediff
+    // so its Severity can be set.
     [Test]
-    public void RaceProperties_Animal_GetterExists()
+    public void HediffApplicationMembersExist()
     {
-        var type = GetType(_game, "Verse.RaceProperties");
-        Assert.That(type, Is.Not.Null);
-        var getter = type!.Properties.SingleOrDefault(p => p.Name == "Animal")?.GetMethod;
-        Assert.That(getter, Is.Not.Null,
-            "RaceProperties.Animal no longer exists — SpawnAnimal's animal-only guard can't be evaluated");
-        Assert.That(getter!.ReturnType.FullName, Is.EqualTo("System.Boolean"),
-            "RaceProperties.Animal is no longer a bool — SpawnAnimals' guard would stop binding");
+        var pawn = GetType(_game, "Verse.Pawn");
+        var health = GetType(_game, "Verse.Pawn_HealthTracker");
+        var hediff = GetType(_game, "Verse.Hediff");
+        Assert.Multiple(() =>
+        {
+            var healthField = pawn!.Fields.SingleOrDefault(f => f.Name == "health");
+            Assert.That(healthField, Is.Not.Null, "Pawn.health no longer exists — SpawnPawn can't apply hediffs");
+            Assert.That(healthField!.FieldType.FullName, Is.EqualTo("Verse.Pawn_HealthTracker"),
+                "Pawn.health changed type — SpawnPawns' AddHediff call would stop binding");
+            var addHediff = health!.Methods.SingleOrDefault(m =>
+                m.Name == "AddHediff" && m.Parameters.Count >= 1 &&
+                m.Parameters[0].ParameterType.FullName == "Verse.HediffDef");
+            Assert.That(addHediff, Is.Not.Null,
+                "Pawn_HealthTracker.AddHediff(HediffDef, ...) no longer exists — SpawnPawn can't apply a hediff");
+            Assert.That(addHediff!.ReturnType.FullName, Is.EqualTo("Verse.Hediff"),
+                "AddHediff no longer returns Hediff — SpawnPawns can't set the applied hediff's severity");
+            Assert.That(hediff!.Properties.SingleOrDefault(p => p.Name == "Severity")?.SetMethod, Is.Not.Null,
+                "Hediff.Severity is no longer settable — SpawnPawn's :severity can't apply");
+        });
     }
 
-    // GenGrid.Standable(IntVec3, Map) is what SpawnAnimals uses instead of GenSpawn.CanSpawnAt (which
-    // takes a ThingDef, not a PawnKindDef) to tell a wall or deep-water cell from one an animal can
-    // stand in. Losing it would make every refused cell read as a silent success.
+    // GenGrid.Standable(IntVec3, Map) is what SpawnPawns uses instead of GenSpawn.CanSpawnAt (which
+    // takes a ThingDef, not a PawnKindDef) to tell a wall or deep-water cell from one a pawn can stand
+    // in. Losing it would make every refused cell read as a silent success.
     [Test]
     public void GenGrid_Standable_MapOverloadExists()
     {
@@ -1142,7 +1245,7 @@ public class ApiCompatibilityTests
             m.Parameters[0].ParameterType.FullName == "Verse.IntVec3" &&
             m.Parameters[1].ParameterType.FullName == "Verse.Map");
         Assert.That(method, Is.Not.Null,
-            "GenGrid.Standable(IntVec3, Map) no longer exists — SpawnAnimals can't tell a standable cell from a wall");
+            "GenGrid.Standable(IntVec3, Map) no longer exists — SpawnPawns can't tell a standable cell from a wall");
     }
 
     // --- helpers ---

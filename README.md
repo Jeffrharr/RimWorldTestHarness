@@ -148,18 +148,18 @@ this repo's `Scenarios/`.
 | `Assert` | `kind`, `images`, `prompt`, `expect`, `confidenceGate`, `logLines` | `kind: vision` — a rubric for an LLM judge over named screenshots plus the game's recent warnings/errors. Soft gate: only a *confident* fail blocks. See `Runner/README.md`, "Vision asserts". |
 
 **Scene setup** — build something worth looking at, at runtime, instead of authoring it into the
-save. Shared by `PlaceThings` / `SetTerrain` / `LookAt` / `SpawnAnimal`: `anchor` (`"center"` by
+save. Shared by `PlaceThings` / `SetTerrain` / `LookAt` / `SpawnPawn`: `anchor` (`"center"` by
 default, or absolute cells like `"125,125"`), `offset` (`"dx,dz"`), and `unfog` (default **true** —
 fogged cells draw neither terrain nor things, so a scene built in fog is invisible while every step
-still reports success). `PlaceThings` / `SetTerrain` also take `clear` (default **false** — it
-permanently destroys whatever occupies the footprint, so it's opt-in; a roofed footprint still warns).
+still reports success). `PlaceThings` / `SetTerrain` / `SpawnPawn` also take `clear` (default **false**
+— it permanently destroys whatever occupies the footprint, so it's opt-in; a roofed footprint still warns).
 
 | Type | Args | Notes |
 |---|---|---|
 | `PlaceThings` | `def`, `stuff`, `rot`, `layout`, `cols`/`rows`/`spacing`, `count`/`axis`, `cells` | `layout` is `grid` (default), `row`, or `cells` (`"0,0; 4,0; 8,-3"`). `rot` is `North`/`East`/`South`/`West` — a lowercase typo fails the scenario rather than silently meaning North. |
 | `SetTerrain` | `def`, `width`, `height` | Paints a rectangle of a `TerrainDef`. |
 | `LookAt` | `zoom` | Aims the camera at the anchor. Omit `zoom` to keep the current one. |
-| `SpawnAnimal` | `kind`, `count`, `spacing`, `clear` | Generates wild animals (no faction) in a row along +x from the anchor. `kind` is a `PawnKindDef` defName (e.g. `Muffalo`); a non-animal kind is rejected. `count` defaults to 1, `spacing` to 2 cells. `clear` (default false) destroys destroyables and strips roof in each spawn cell first, so an animal can land where a wall or rock stood. Any cell that still can't take a pawn (deep water, indestructible edifice) is reported, not silently skipped. |
+| `SpawnPawn` | `kind`, `faction`, `gender`, `hediffs`, `count`, `spacing`, `clear` | Generates pawns in a row along +x from the anchor. `kind` is a `PawnKindDef` defName (`Muffalo`, `Colonist`, `Pirate`). `faction` is `wild` (default, no faction — animals/wild men), `player` (your colony), or `hostile` (a deterministic enemy faction). `gender` is `male`/`female` (omit for random). `hediffs` applies health conditions: `"Flu:0.4; MissingBodyPart@Leg; BionicArm@Arm"` — each is a `HediffDef`, optionally `@BodyPartDef` to target a part and/or `:severity`; an unknown def or a part the race lacks fails the step before any pawn spawns. `count` defaults to 1, `spacing` to 2. `clear` (default false) bulldozes the spawn cells first. Any cell that still can't take a pawn is reported, not silently skipped. |
 
 **Composite**
 
