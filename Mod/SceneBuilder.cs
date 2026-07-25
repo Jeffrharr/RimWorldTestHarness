@@ -403,6 +403,93 @@ public static class SceneBuilder
         return null;
     }
 
+    // ----- SpawnAnimal ------------------------------------------------------------------------
+
+    // Generates wild animals and spawns them on the plan's cells, returning an error describing any
+    // shortfall. Counting what actually landed is the same discipline as PlaceThings: an animal asked
+    // for on a wall cell would otherwise be silently absent, and a screenshot of a "successful" spawn
+    // would show empty ground.
+    public static string? SpawnAnimals(Map map, AnimalPlan plan)
+    {
+        if (!TryResolveAnimalKind(plan.KindDefName, out PawnKindDef kind, out string? kindError))
+            return kindError;
+
+        IntVec3 anchor = ResolveAnchor(plan, map);
+        List<string> refused = new List<string>();
+        int spawned = 0;
+
+        foreach (ScenePlacement placement in plan.Cells)
+        {
+            IntVec3 cell = anchor + new IntVec3(placement.Dx, 0, placement.Dz);
+            if (TrySpawnAnimal(kind, cell, map, out string? reason))
+                spawned++;
+            else
+                refused.Add($"({cell.x},{cell.z}) {reason}");
+        }
+
+        // Unfog last, after spawning: RimWorld draws nothing in fogged cells, so a scene built at map
+        // centre on a fresh colony is invisible while every step still reports success. Reuses the same
+        // core PlaceThings/SetTerrain lift fog through.
+        if (plan.Unfog)
+            Unfog(map);
+
+        return ShortfallError(spawned, plan.Cells.Count, kind.defName, refused);
+    }
+
+    // errorOnFail: false — a bad kind name is a scenario bug that belongs in the report, not a
+    // Log.Error buried in Player.log. A non-animal kind is rejected here rather than generated: a
+    // colonist or mechanoid kind would come out of PawnGenerator with faction/gear this step does not
+    // yet handle, so the scope limit is enforced, not silently exceeded.
+    private static bool TryResolveAnimalKind(string kindDefName, out PawnKindDef kind, out string? error)
+    {
+        kind = DefDatabase<PawnKindDef>.GetNamed(kindDefName, errorOnFail: false);
+        if (kind == null)
+        {
+            error = $"no PawnKindDef named '{kindDefName}' in the active modset";
+            return false;
+        }
+
+        // kind.race can be null on a malformed def; guard before touching RaceProps so the report reads
+        // as a scenario error rather than a NullReferenceException swallowed mid-run.
+        if (kind.race?.race == null || !kind.RaceProps.Animal)
+        {
+            error = $"'{kindDefName}' is not an animal — SpawnAnimal only spawns wild animals for now";
+            return false;
+        }
+
+        error = null;
+        return true;
+    }
+
+    private static bool TrySpawnAnimal(PawnKindDef kind, IntVec3 cell, Map map, out string? reason)
+    {
+        if (!cell.InBounds(map))
+        {
+            reason = "out of bounds";
+            return false;
+        }
+
+        // Standable rather than GenSpawn.CanSpawnAt (which takes a ThingDef, not a PawnKindDef): a pawn
+        // needs a cell it can stand in, and a wall or deep water is exactly what Standable rejects. The
+        // terrain is named for the same reason PlaceThings names it — "(x,z) refused" leaves the author
+        // guessing, "(x,z) ... terrain 'WaterDeep'" ends the investigation.
+        if (!cell.Standable(map))
+        {
+            reason = "cell is not standable " +
+                     $"(terrain '{map.terrainGrid.TerrainAt(cell).defName}')";
+            return false;
+        }
+
+        // Wild animal: null faction is what makes it unaffiliated wildlife, the deliberate default for
+        // this first cut. Rot4.South faces the animal toward the camera so screenshots are consistent
+        // rather than showing a randomly-turned pawn.
+        Pawn pawn = PawnGenerator.GeneratePawn(kind, null);
+        GenSpawn.Spawn(pawn, cell, map, Rot4.South);
+
+        reason = null;
+        return true;
+    }
+
     // ----- dev-menu entry ---------------------------------------------------------------------
 
     // The shadow-caster case as a one-click dev action, so the scene can be set up by hand in a

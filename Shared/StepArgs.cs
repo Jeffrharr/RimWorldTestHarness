@@ -91,6 +91,15 @@ public static class StepArgs
     public const string LookAtType = "LookAt";
     public const string LookAtZoom = "zoom"; // float > 0, CameraDriver root size; omit to keep current
 
+    // Spawns wild animals into the scene. Reuses the scene family's anchor/offset/unfog keys because
+    // it answers "where on the map?" the same way; see AnimalLayout for the row grammar and
+    // SceneBuilder.SpawnAnimals for how a kind resolves and a pawn is generated. Wild animals only for
+    // now — a non-animal kind is rejected rather than generated without faction/gear.
+    public const string SpawnAnimalType = "SpawnAnimal";
+    public const string SpawnAnimalKind = "kind";       // PawnKindDef defName; must be an animal (e.g. "Muffalo")
+    public const string SpawnAnimalCount = "count";     // int >= 1, default 1
+    public const string SpawnAnimalSpacing = "spacing"; // int >= 1, cells between animals in the row, default 2
+
     // Timelapse is the one composite step: it never reaches the executor, because
     // TimelapseExpander desugars it at load time into a SetTime/Wait/Screenshot triple per frame.
     // See TimelapseExpander for the range semantics and defaults.

@@ -1,0 +1,12 @@
+{
+  "name": "spawn_animals",
+  "saveFile": "minimal_colony.rws",
+  "steps": [
+    { "type": "SetTile", "args": { "latitude": "45" } },
+    { "type": "SetTime", "args": { "hour": "12" } },
+    { "type": "SetTerrain", "args": { "def": "Concrete", "width": "24", "height": "24" } },
+    { "type": "SpawnAnimal", "args": { "kind": "Muffalo", "count": "3", "spacing": "3" } },
+    { "type": "LookAt", "args": { "zoom": "16" } },
+    { "type": "Screenshot", "args": { "fileName": "muffalo_row.png" } }
+  ]
+}
