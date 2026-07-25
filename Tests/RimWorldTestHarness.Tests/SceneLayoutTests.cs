@@ -345,6 +345,82 @@ public class SceneLayoutTests
         Assert.That(error, Does.Contain($"unknown arg '{StepArgs.SceneUnfog}'"));
     }
 
+    // ----- clear ------------------------------------------------------------------------------
+
+    // Defaults OFF, the opposite of `unfog`, and the asymmetry is the decision worth pinning: fog is a
+    // view and clearing deletes content, the same cores are reachable from a dev action pointed at a
+    // real colony, and a rock-blocked footprint already fails loudly on its own.
+    [Test]
+    public void Plan_ClearDefaultsOff()
+    {
+        Assert.That(Plan().Clear, Is.False);
+        Assert.That(SceneLayout.DefaultClear, Is.False);
+    }
+
+    [TestCase("true", true)]
+    [TestCase("false", false)]
+    [TestCase("True", true)]
+    [TestCase("FALSE", false)]
+    public void Plan_ClearIsCarried(string raw, bool expected)
+    {
+        Assert.That(Plan((StepArgs.SceneClear, raw)).Clear, Is.EqualTo(expected));
+    }
+
+    // Only true/false, so a typo can't quietly mean "didn't clear" and leave the author wondering why
+    // the pad is still buried.
+    [TestCase("1")]
+    [TestCase("yes")]
+    [TestCase("ture")]
+    public void Plan_NonBooleanClear_IsRejected(string raw)
+    {
+        Assert.That(PlanError((StepArgs.SceneClear, raw)),
+            Does.Contain($"'{StepArgs.SceneClear}' must be true or false"));
+    }
+
+    // Accepted under every layout, because rock is just as likely to be under a row or an explicit cell
+    // list as under a grid.
+    [TestCase(SceneLayout.LayoutGrid, "")]
+    [TestCase(SceneLayout.LayoutRow, "")]
+    [TestCase(SceneLayout.LayoutCells, "0,0")]
+    public void Plan_ClearIsAcceptedUnderEveryLayout(string layout, string cells)
+    {
+        Dictionary<string, string> args = ThingArgs(
+            (StepArgs.PlaceThingsLayout, layout),
+            (StepArgs.SceneClear, "true"));
+        if (cells.Length > 0)
+            args[StepArgs.PlaceThingsCells] = cells;
+
+        Assert.That(SceneLayout.TryPlan(args, out ScenePlan plan, out string? error), Is.True,
+            $"expected a valid plan, got error: {error}");
+        Assert.That(plan.Clear, Is.True);
+    }
+
+    [Test]
+    public void PlanTerrain_ClearDefaultsOffAndIsCarried()
+    {
+        Assert.That(
+            SceneLayout.TryPlanTerrain(Args((StepArgs.SceneDef, "Concrete")), out TerrainPlan off, out _),
+            Is.True);
+        Assert.That(off.Clear, Is.False);
+
+        Assert.That(
+            SceneLayout.TryPlanTerrain(
+                Args((StepArgs.SceneDef, "Concrete"), (StepArgs.SceneClear, "true")),
+                out TerrainPlan on, out _),
+            Is.True);
+        Assert.That(on.Clear, Is.True);
+    }
+
+    // LookAt builds nothing, so it has no footprint to clear — accepting the arg would imply otherwise.
+    [Test]
+    public void PlanLookAt_ClearArg_IsRejected()
+    {
+        Assert.That(
+            SceneLayout.TryPlanLookAt(Args((StepArgs.SceneClear, "true")), out _, out string? error),
+            Is.False);
+        Assert.That(error, Does.Contain($"unknown arg '{StepArgs.SceneClear}'"));
+    }
+
     // ----- anchor and offset ------------------------------------------------------------------
 
     [Test]

@@ -48,6 +48,19 @@ public static class StepArgs
     // reporting success. Opt out with "false" when a scenario genuinely wants fog left alone.
     public const string SceneUnfog = "unfog"; // bool, default true
 
+    // Whether PlaceThings/SetTerrain clear their footprint before building: destroy the destroyable
+    // things standing in it (mineable rock, chunks, plants, existing buildings) and strip roof, so the
+    // area is genuinely under open sky. See SceneClearing for what may and may not be destroyed.
+    //
+    // Defaults to FALSE, unlike its sibling `unfog`, and the asymmetry is deliberate. Lifting fog only
+    // changes what is drawn; clearing permanently deletes map content, and SceneBuilder's cores are
+    // also reached from a [DebugAction] that DevActionCatalog exposes over the live companion channel
+    // — i.e. one invoke away from a real player's colony, with no undo. A rock-blocked footprint also
+    // cannot pass silently (PlaceThings already reports every refused cell), whereas a default-on
+    // clear could silently bulldoze. Left unset, scene setup still WARNS when the footprint is roofed,
+    // so the omission never buys a green run over a wrongly-lit screenshot.
+    public const string SceneClear = "clear"; // bool, default false
+
     public const string PlaceThingsType = "PlaceThings";
     public const string PlaceThingsLayout = "layout";   // "grid" (default) | "row" | "cells"
     public const string PlaceThingsStuff = "stuff";     // stuff ThingDef; omit for the def's default

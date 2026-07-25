@@ -57,12 +57,19 @@ public static class SceneLayout
     // the failure mode this guards against.
     public const bool DefaultUnfog = true;
 
+    // Clearing is opt-IN, where unfogging is opt-out. See StepArgs.SceneClear for the argument: fog is
+    // a view, rock is content, and the same cores are reachable from a dev action pointed at a real
+    // colony. SceneBuilder still warns about a roofed footprint when this is off, so choosing the safe
+    // default doesn't buy silence.
+    public const bool DefaultClear = false;
+
     private static readonly string[] CommonArgs =
     {
         StepArgs.SceneDef,
         StepArgs.SceneAnchor,
         StepArgs.SceneOffset,
         StepArgs.SceneUnfog,
+        StepArgs.SceneClear,
     };
 
     // ----- PlaceThings ------------------------------------------------------------------------
@@ -87,6 +94,8 @@ public static class SceneLayout
         if (!ReadStuffAndRotation(args, plan, out error))
             return false;
         if (!ArgReader.TryReadBool(args, StepArgs.SceneUnfog, DefaultUnfog, out plan.Unfog, out error))
+            return false;
+        if (!ArgReader.TryReadBool(args, StepArgs.SceneClear, DefaultClear, out plan.Clear, out error))
             return false;
         if (!ReadCells(args, layout, plan.Cells, out error))
             return false;
@@ -328,6 +337,8 @@ public static class SceneLayout
             return false;
         if (!ArgReader.TryReadBool(args, StepArgs.SceneUnfog, DefaultUnfog, out plan.Unfog, out error))
             return false;
+        if (!ArgReader.TryReadBool(args, StepArgs.SceneClear, DefaultClear, out plan.Clear, out error))
+            return false;
         if (!ReadPositive(args, StepArgs.SetTerrainWidth, DefaultTerrainWidth, out plan.Width, out error))
             return false;
         if (!ReadPositive(args, StepArgs.SetTerrainHeight, DefaultTerrainHeight, out plan.Height, out error))
@@ -512,6 +523,11 @@ public sealed class ScenePlan : IAnchoredPlan
     // Lift fog over the map after building, so the scene is actually visible. See StepArgs.SceneUnfog.
     public bool Unfog = SceneLayout.DefaultUnfog;
 
+    // Clear the PLACEMENT CELLS (not a bounding rect) of things and roof before building. Cell-by-cell
+    // because a grid's pillars are spaced apart, and clearing the gaps between them would flatten
+    // scenery the scenario never asked to touch. See StepArgs.SceneClear.
+    public bool Clear = SceneLayout.DefaultClear;
+
     public SceneAnchorKind Anchor { get; set; }
     public int AnchorX { get; set; }
     public int AnchorZ { get; set; }
@@ -527,6 +543,11 @@ public sealed class TerrainPlan : IAnchoredPlan
 
     // Lift fog over the map after painting. See StepArgs.SceneUnfog.
     public bool Unfog = SceneLayout.DefaultUnfog;
+
+    // Clear the WHOLE rect of things and roof before painting — every cell, not just the ones a pillar
+    // will stand on. The pad is what shadows fall on, so overhead mountain roof darkens it just as
+    // wrongly where nothing stands. See StepArgs.SceneClear.
+    public bool Clear = SceneLayout.DefaultClear;
 
     public SceneAnchorKind Anchor { get; set; }
     public int AnchorX { get; set; }
