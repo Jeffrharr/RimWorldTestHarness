@@ -37,6 +37,14 @@ public static class SceneLayout
     public const int DefaultTerrainWidth = 40;
     public const int DefaultTerrainHeight = 40;
 
+    // Roof defaults are small where terrain's are 40x40, and the asymmetry is the point: a terrain
+    // pad is a backdrop you want to fill the frame, whereas a roof slab is a *structure* — it wants
+    // to be the size of the thing being roofed, and an accidental 40x40 slab would silently put the
+    // whole scene indoors, which is exactly the state most roof-sensitive tests are trying to
+    // measure the edge of.
+    public const int DefaultRoofWidth = 7;
+    public const int DefaultRoofHeight = 7;
+
     public const string AxisX = "x";
     public const string AxisZ = "z";
 
@@ -357,6 +365,52 @@ public static class SceneLayout
         return true;
     }
 
+    // ----- SetRoof ----------------------------------------------------------------------------
+
+    // Same rectangle grammar as SetTerrain (see StepArgs.SetRoofType for why roofing needs a step of
+    // its own at all), minus `clear`: painting roof destroys nothing, and offering a key that
+    // bulldozes the cells under a slab would be a demolition tool wearing a roofer's name.
+    public static bool TryPlanRoof(
+        IReadOnlyDictionary<string, string> args,
+        out RoofPlan plan,
+        out string? error)
+    {
+        plan = new RoofPlan();
+
+        string[] known =
+        {
+            StepArgs.SceneDef,
+            StepArgs.SceneAnchor,
+            StepArgs.SceneOffset,
+            StepArgs.SceneUnfog,
+            StepArgs.SetRoofWidth,
+            StepArgs.SetRoofHeight,
+        };
+
+        if (!ArgReader.ValidateKnownArgs(args, known, out error))
+            return false;
+        if (!ReadDefName(args, out plan.DefName, out error))
+            return false;
+        if (!ReadAnchor(args, plan, out error))
+            return false;
+        if (!ArgReader.TryReadBool(args, StepArgs.SceneUnfog, DefaultUnfog, out plan.Unfog, out error))
+            return false;
+        if (!ReadPositive(args, StepArgs.SetRoofWidth, DefaultRoofWidth, out plan.Width, out error))
+            return false;
+        if (!ReadPositive(args, StepArgs.SetRoofHeight, DefaultRoofHeight, out plan.Height, out error))
+            return false;
+
+        // Same long-multiply guard, same reason, same cap as terrain: see TryPlanTerrain.
+        if ((long)plan.Width * plan.Height > MaxTerrainCells)
+        {
+            error = $"{plan.Width}x{plan.Height} exceeds the {MaxTerrainCells}-cell roof cap";
+            return false;
+        }
+
+        error = null;
+        return true;
+    }
+
     // ----- LookAt -----------------------------------------------------------------------------
 
     // Placing casters at map centre is pointless if the camera is still wherever the save left it,
@@ -553,6 +607,24 @@ public sealed class TerrainPlan : IAnchoredPlan
     // will stand on. The pad is what shadows fall on, so overhead mountain roof darkens it just as
     // wrongly where nothing stands. See StepArgs.SceneClear.
     public bool Clear = SceneLayout.DefaultClear;
+
+    public SceneAnchorKind Anchor { get; set; }
+    public int AnchorX { get; set; }
+    public int AnchorZ { get; set; }
+    public int OffsetX { get; set; }
+    public int OffsetZ { get; set; }
+
+    public int Width;
+    public int Height;
+}
+
+public sealed class RoofPlan : IAnchoredPlan
+{
+    // A RoofDef defName, or StepArgs.SetRoofNoneDef ("None") to strip roof over the rect instead.
+    public string DefName = "";
+
+    // Lift fog over the map after painting. See StepArgs.SceneUnfog.
+    public bool Unfog = SceneLayout.DefaultUnfog;
 
     public SceneAnchorKind Anchor { get; set; }
     public int AnchorX { get; set; }

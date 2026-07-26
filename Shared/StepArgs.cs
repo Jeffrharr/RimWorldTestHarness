@@ -50,7 +50,7 @@ public static class StepArgs
     // map?" the same way, and a scenario author shouldn't have to remember three spellings of it.
     // Anchors and offsets are whole cells; see SceneLayout for the grammar and SceneBuilder for how
     // an anchor resolves against a live map.
-    public const string SceneDef = "def";       // ThingDef (PlaceThings) or TerrainDef (SetTerrain) defName
+    public const string SceneDef = "def";       // ThingDef (PlaceThings), TerrainDef (SetTerrain) or RoofDef (SetRoof) defName
     public const string SceneAnchor = "anchor"; // "center" (default) or absolute map cells "125,125"
     public const string SceneOffset = "offset"; // "dx,dz" whole cells from the anchor, default "0,0"
 
@@ -87,6 +87,26 @@ public static class StepArgs
     public const string SetTerrainType = "SetTerrain";
     public const string SetTerrainWidth = "width";   // int >= 1
     public const string SetTerrainHeight = "height"; // int >= 1
+
+    // Paints a rectangle of roof. This is the one piece of map state a scenario could not build
+    // before: RimWorld only ever roofs a cell as a consequence of *play* (enclosing a room hands the
+    // job to AutoBuildRoofAreaSetter over the following ticks, and a roof-area designation is a
+    // colonist work order), so a step that spawns walls into a fixture gets a walled shell with no
+    // roof on it and no way to ask for one. Everything that reads the roof grid — indoor lighting,
+    // shelter, temperature, and eaves, where roof exists over cells no wall encloses — was therefore
+    // unreachable from a scenario.
+    //
+    // Width/height/anchor/offset are SetTerrain's rectangle grammar, deliberately: a scenario that
+    // paints a floor and then roofs it writes the same rect twice.
+    public const string SetRoofType = "SetRoof";
+    public const string SetRoofWidth = "width";   // int >= 1
+    public const string SetRoofHeight = "height"; // int >= 1
+
+    // `def` value that REMOVES roof over the rect instead of painting one. Spelled as a def value
+    // rather than a separate step because roofing and unroofing a rectangle are the same operation
+    // over the same grammar, and a scenario carving a courtyard out of a slab it just painted would
+    // otherwise need two vocabularies for one idea.
+    public const string SetRoofNoneDef = "None";
 
     public const string LookAtType = "LookAt";
     public const string LookAtZoom = "zoom"; // float > 0, CameraDriver root size; omit to keep current

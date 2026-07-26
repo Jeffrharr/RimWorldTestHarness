@@ -606,6 +606,94 @@ public class SceneLayoutTests
         Assert.That(error, Does.Contain($"exceeds the {SceneLayout.MaxTerrainCells}-cell terrain cap"));
     }
 
+    // ----- SetRoof ----------------------------------------------------------------------------
+
+    [Test]
+    public void PlanRoof_Defaults_AreASmallSquareAtMapCentre()
+    {
+        Assert.That(
+            SceneLayout.TryPlanRoof(Args((StepArgs.SceneDef, "RoofConstructed")), out RoofPlan plan, out string? error),
+            Is.True, $"expected a valid plan, got error: {error}");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(plan.DefName, Is.EqualTo("RoofConstructed"));
+            Assert.That(plan.Width, Is.EqualTo(SceneLayout.DefaultRoofWidth));
+            Assert.That(plan.Height, Is.EqualTo(SceneLayout.DefaultRoofHeight));
+            Assert.That(plan.Anchor, Is.EqualTo(SceneAnchorKind.MapCenter));
+        });
+    }
+
+    // The roof default must NOT inherit terrain's 40x40: a slab that size puts a whole scene
+    // indoors, which is the state most roof-sensitive tests exist to measure the edge of.
+    [Test]
+    public void PlanRoof_DefaultExtent_IsSmallerThanTerrains()
+    {
+        Assert.Multiple(() =>
+        {
+            Assert.That(SceneLayout.DefaultRoofWidth, Is.LessThan(SceneLayout.DefaultTerrainWidth));
+            Assert.That(SceneLayout.DefaultRoofHeight, Is.LessThan(SceneLayout.DefaultTerrainHeight));
+        });
+    }
+
+    // "None" is the documented way to strip roof, so it has to survive planning as an ordinary def
+    // name rather than being rejected as a missing one — PaintRoof is what resolves it to no roof.
+    [TestCase("None")]
+    [TestCase("none")]
+    public void PlanRoof_NoneDef_IsAcceptedForRemoval(string spelling)
+    {
+        Assert.That(
+            SceneLayout.TryPlanRoof(Args((StepArgs.SceneDef, spelling)), out RoofPlan plan, out string? error),
+            Is.True, $"expected a valid plan, got error: {error}");
+        Assert.That(plan.DefName, Is.EqualTo(spelling));
+    }
+
+    [Test]
+    public void PlanRoof_MissingDef_IsRejected()
+    {
+        Assert.That(SceneLayout.TryPlanRoof(Args(), out _, out string? error), Is.False);
+        Assert.That(error, Does.Contain($"'{StepArgs.SceneDef}' is required"));
+    }
+
+    // `clear` belongs to the steps that destroy things. Roofing destroys nothing, so accepting the
+    // key would advertise a demolition it never performs.
+    [TestCase("clear")]
+    [TestCase("stuff")]
+    [TestCase("layout")]
+    public void PlanRoof_ForeignArg_IsRejected(string foreignArg)
+    {
+        Assert.That(
+            SceneLayout.TryPlanRoof(
+                Args((StepArgs.SceneDef, "RoofConstructed"), (foreignArg, "1")), out _, out string? error),
+            Is.False);
+        Assert.That(error, Does.Contain($"unknown arg '{foreignArg}'"));
+    }
+
+    [TestCase(StepArgs.SetRoofWidth, "0")]
+    [TestCase(StepArgs.SetRoofHeight, "-4")]
+    public void PlanRoof_NonPositiveExtent_IsRejected(string key, string value)
+    {
+        Assert.That(
+            SceneLayout.TryPlanRoof(
+                Args((StepArgs.SceneDef, "RoofConstructed"), (key, value)), out _, out string? error),
+            Is.False);
+        Assert.That(error, Does.Contain("must be at least 1"));
+    }
+
+    [Test]
+    public void PlanRoof_ExtentsThatOverflowIntProduct_AreStillRejected()
+    {
+        Assert.That(
+            SceneLayout.TryPlanRoof(
+                Args(
+                    (StepArgs.SceneDef, "RoofConstructed"),
+                    (StepArgs.SetRoofWidth, "65536"),
+                    (StepArgs.SetRoofHeight, "65536")),
+                out _, out string? error),
+            Is.False);
+        Assert.That(error, Does.Contain($"exceeds the {SceneLayout.MaxTerrainCells}-cell roof cap"));
+    }
+
     // ----- LookAt -----------------------------------------------------------------------------
 
     [Test]

@@ -36,6 +36,18 @@ public sealed class SetTerrainStep : IStepSpec
         SceneLayout.TryPlanTerrain(args, out _, out error);
 }
 
+// Residue.Map like its siblings: roof outlives the scenario that painted it, and a roofed cell
+// changes lighting, temperature and shelter for everything the next scenario in a suite does.
+public sealed class SetRoofStep : IStepSpec
+{
+    public string Type => StepArgs.SetRoofType;
+    public ScenarioResidue Residue => ScenarioResidue.Map;
+    public bool LiveCallable => false;
+
+    public bool TryValidate(IReadOnlyDictionary<string, string> args, out string? error) =>
+        SceneLayout.TryPlanRoof(args, out _, out error);
+}
+
 // Camera only — LookAt moves the view and changes nothing the lighting depends on.
 public sealed class LookAtStep : IStepSpec
 {
