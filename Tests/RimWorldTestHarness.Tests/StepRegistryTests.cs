@@ -23,7 +23,8 @@ public class StepRegistryTests
             StepArgs.SetTileType, StepArgs.SetSeasonType, StepArgs.SetTimeType,
             StepArgs.FastForwardType, StepArgs.WaitType, StepArgs.ProbeType,
             StepArgs.ScreenshotType, StepArgs.SetFeatureType, StepArgs.StartConditionType,
-            StepArgs.PlaceThingsType, StepArgs.SetTerrainType, StepArgs.LookAtType,
+            StepArgs.PlaceThingsType, StepArgs.SetTerrainType, StepArgs.SetRoofType,
+            StepArgs.LookAtType,
             StepArgs.SpawnPawnType, StepArgs.TimelapseType, "SetWeather", "Assert",
         };
 
@@ -57,6 +58,7 @@ public class StepRegistryTests
     // the next scenario against a contaminated world while believing it was isolated.
     [TestCase(StepArgs.PlaceThingsType)]
     [TestCase(StepArgs.SetTerrainType)]
+    [TestCase(StepArgs.SetRoofType)]
     [TestCase(StepArgs.SpawnPawnType)]
     [TestCase(StepArgs.StartConditionType)]
     [TestCase("SetWeather")]

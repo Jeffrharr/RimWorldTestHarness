@@ -47,6 +47,25 @@ public sealed class SetTerrainAction : IStepAction
     }
 }
 
+// Settles like its siblings, and needs it more than either: roof changes dirty the map mesh, and
+// the lighting/shadow layers that read the roof grid only rebuild on the regenerate that follows.
+public sealed class SetRoofAction : IStepAction
+{
+    public string Type => StepArgs.SetRoofType;
+
+    public StepOutcome Execute(IReadOnlyDictionary<string, string> args, StepContext ctx)
+    {
+        if (!SceneLayout.TryPlanRoof(args, out RoofPlan plan, out string? error))
+            return StepOutcome.Fail($"SetRoof: {error}");
+
+        string? paintError = SceneBuilder.PaintRoof(ctx.Map, plan);
+        if (paintError != null)
+            return StepOutcome.Fail($"SetRoof: {paintError}");
+
+        return new StepOutcome { WaitFrames = StepHelpers.SceneSettleFrames };
+    }
+}
+
 // No settle wait: the camera jump is instant and changes nothing the lighting depends on.
 public sealed class LookAtAction : IStepAction
 {

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using LudeonTK;
@@ -384,6 +385,59 @@ public static class SceneBuilder
             Log.Message($"RWTH: SetTerrain painted {painted} cells, {outOfBounds} were out of bounds");
 
         return ReportClearing(StepArgs.SetTerrainType, plan.Clear, tally);
+    }
+
+    // ----- SetRoof ----------------------------------------------------------------------------
+
+    // Roof over a rect — the one map state a scenario could not otherwise build (StepArgs.SetRoofType
+    // has the why). RoofGrid.SetRoof is the whole mechanism: it dirties the Roofs mesh flag, dirties
+    // the glow grid, and tells the cell's District its roof changed, which is what invalidates the
+    // Room.OpenRoofCount cache that UsesOutdoorTemperature — and therefore anything that separates a
+    // porch from an interior — is derived from. Nothing else needs poking.
+    //
+    // No `clear`: unlike terrain, roofing destroys nothing, so there is nothing to bulldoze first.
+    // Roof is painted directly onto whatever stands in the rect, walls included, which is exactly
+    // what an eave is.
+    public static string? PaintRoof(Map map, RoofPlan plan)
+    {
+        bool removing = plan.DefName.Equals(StepArgs.SetRoofNoneDef, StringComparison.OrdinalIgnoreCase);
+
+        RoofDef? def = removing ? null : DefDatabase<RoofDef>.GetNamed(plan.DefName, errorOnFail: false);
+        if (!removing && def == null)
+            return $"no RoofDef named '{plan.DefName}' in the active modset " +
+                   $"(did you mean RoofConstructed, or '{StepArgs.SetRoofNoneDef}' to strip roof?)";
+
+        IntVec3 anchor = ResolveAnchor(plan, map);
+        CellRect rect = CellRect.CenteredOn(anchor, plan.Width, plan.Height);
+
+        int painted = 0;
+        int outOfBounds = 0;
+
+        foreach (IntVec3 cell in rect)
+        {
+            if (cell.InBounds(map))
+            {
+                map.roofGrid.SetRoof(cell, def);
+                painted++;
+            }
+            else
+            {
+                outOfBounds++;
+            }
+        }
+
+        if (plan.Unfog)
+            Unfog(map);
+
+        if (painted == 0)
+            return $"roofed no cells — the {plan.Width}x{plan.Height} rect at " +
+                   $"({anchor.x},{anchor.z}) lies entirely outside the map";
+
+        // Partly clipped is reported, not failed — same call as SetTerrain's.
+        if (outOfBounds > 0)
+            Log.Message($"RWTH: SetRoof covered {painted} cells, {outOfBounds} were out of bounds");
+
+        return null;
     }
 
     // ----- LookAt -----------------------------------------------------------------------------
