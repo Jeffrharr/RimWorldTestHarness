@@ -137,6 +137,7 @@ this repo's `Scenarios/`.
 | `Wait` | `frames` | int ≥ 0. Idles for rendered frames — use it to let visuals settle. |
 | `StartCondition` | `conditionDef`, `durationHours`, `agedHours` | Starts a vanilla `GameConditionDef` (`SolarFlare`, `Eclipse`, …). `durationHours` defaults to 24; ≤ 0 means permanent. `agedHours` back-dates the start tick so the condition is "born aged" and any fade-in has already elapsed. |
 | `SetWeather` | `weatherDef`, `instant` | Transitions to a `WeatherDef` (`Rain`, `Clear`, `Fog`, …) — weather drives sky glow and shadow strength. `instant` defaults to true and completes the blend immediately; false leaves the natural transition. |
+| `SetBiome` | `biomeDef` | Repoints the map's world tile at a `BiomeDef` (`Undercave`, `IceSheet`, `Orbit`, …). A lot of lighting behaviour is gated on the biome rather than the map — `disableSkyLighting`, `disableShadows`, and `baseWeatherCommonalities` deciding whether the map has changeable weather at all — and with one save fixture this is the only way to reach those branches. Dirties `ScenarioResidue.Biome`, which requires a reload, so a suite will isolate around it. |
 
 **Verification**
 

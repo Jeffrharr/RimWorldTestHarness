@@ -98,7 +98,8 @@ public class ScenarioResidueTests
             // Named explicitly so adding a reload-only flag is a deliberate act with a test to update,
             // not something that slips in unnoticed.
             Assert.That(ScenarioResidueAnalyzer.RequiresReload,
-                Is.EqualTo(ScenarioResidue.Map | ScenarioResidue.GameConditions | ScenarioResidue.Weather));
+                Is.EqualTo(ScenarioResidue.Map | ScenarioResidue.GameConditions
+                    | ScenarioResidue.Weather | ScenarioResidue.Biome));
         });
     }
 
