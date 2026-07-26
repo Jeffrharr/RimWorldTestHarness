@@ -57,8 +57,14 @@ public enum ScenarioResidue
     // point, because the failure mode of guessing wrong here is silent cross-contamination.
     Weather = 1 << 8,
 
+    // The map's world tile repointed at a different BiomeDef by SetBiome. Not soft-resettable, and for
+    // a stronger reason than Weather: a biome change is not confined to the one field — temperature,
+    // plant and animal density, ambient sound and the world-map tile graphic all read off it, and
+    // RimWorld caches parts of that. See Shared/Steps/BuiltIn/SetBiomeStep.cs.
+    Biome = 1 << 9,
+
     All = Clock | Latitude | FeatureFlags | TimeSpeed | Camera | ScreenshotMode | Map |
-          GameConditions | Weather,
+          GameConditions | Weather | Biome,
 }
 
 // Pure classification of a step list's residue. Kept in Shared with no game types so the whole

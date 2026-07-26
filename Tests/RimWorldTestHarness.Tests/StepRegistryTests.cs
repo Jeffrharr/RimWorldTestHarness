@@ -25,7 +25,7 @@ public class StepRegistryTests
             StepArgs.ScreenshotType, StepArgs.SetFeatureType, StepArgs.StartConditionType,
             StepArgs.PlaceThingsType, StepArgs.SetTerrainType, StepArgs.SetRoofType,
             StepArgs.LookAtType,
-            StepArgs.SpawnPawnType, StepArgs.TimelapseType, "SetWeather", "Assert",
+            StepArgs.SpawnPawnType, StepArgs.TimelapseType, "SetWeather", "SetBiome", "Assert",
         };
 
         Assert.That(StepRegistry.KnownTypes, Is.EquivalentTo(expected));
@@ -62,6 +62,7 @@ public class StepRegistryTests
     [TestCase(StepArgs.SpawnPawnType)]
     [TestCase(StepArgs.StartConditionType)]
     [TestCase("SetWeather")]
+    [TestCase("SetBiome")]
     public void MutatingSteps_RequireAReload(string stepType)
     {
         ScenarioResidue residue = ScenarioResidueAnalyzer.OfStep(stepType);
@@ -135,5 +136,15 @@ public class StepRegistryTests
 
         Assert.That(errors, Has.Count.EqualTo(1));
         Assert.That(errors[0], Does.Contain("instant"));
+    }
+
+    [Test]
+    public void SetBiome_RejectsAMissingDefNameAtLoad()
+    {
+        List<string> errors = new List<string>();
+        StepValidator.ValidateAll(new[] { new ScenarioStep { Type = "SetBiome" } }, errors);
+
+        Assert.That(errors, Has.Count.EqualTo(1));
+        Assert.That(errors[0], Does.Contain("biomeDef"));
     }
 }
