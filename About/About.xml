@@ -3,6 +3,9 @@
   <name>RimWorld Test Harness</name>
   <author>Joof</author>
   <packageId>joof.rimworldtestharness</packageId>
+  <!-- Never listed on Workshop, but the dev-facing mod list still renders this as a link, and it is
+       the only structured place ModMetaData can point at the licence — there is no license field. -->
+  <url>https://github.com/Jeffrharr/RimWorldTestHarness</url>
   <supportedVersions>
     <li>1.6</li>
   </supportedVersions>
@@ -17,7 +20,9 @@ scripted actions), runs numeric probes and/or screenshots against another mod un
 writes a JSON report. Not intended for normal play — enabled only by the Runner scripts under
 Runner/ when running an automated test pass.
 
-Not published to Workshop.</description>
+Not published to Workshop.
+
+MIT licensed — source at https://github.com/Jeffrharr/RimWorldTestHarness.</description>
   <loadAfter>
     <li>Ludeon.RimWorld</li>
     <li>Ludeon.RimWorld.Royalty</li>
