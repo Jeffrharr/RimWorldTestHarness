@@ -295,14 +295,25 @@ What actually works is RimWorld's own **autostart save mechanism**, already buil
 `Verse.Root_Entry.Start()`: if `Prefs.DevMode` is true and a save file named exactly `autostart`
 (case-insensitive) exists under `GenFilePaths.SavedGamesFolderPath`
 (`SaveGameFilesUtility.GetAutostartSaveFile()`), vanilla code loads it itself
-(`GameDataSaveLoader.LoadGame(FileInfo)`) before any of our code runs. No custom loader is needed
-— `Patch_ForceDevMode.cs` (a Harmony postfix scoped to `ScenarioDriver.Active`, so it never
-touches the user's real `Prefs.xml`) makes `Prefs.DevMode` read `true` while a scenario is active,
-and `Runner/run_test.sh` copies the fixture save to `Saves/autostart.rws` before launch.
+(`GameDataSaveLoader.LoadGame(FileInfo)`) before any of our code runs. No custom loader is needed —
+`Runner/run_test.sh` copies the fixture save to `Saves/autostart.rws` before launch and seeds
+`<devMode>True</devMode>` into `Prefs.xml`, restoring the real file on teardown.
 
-This is also *why* `ScenarioDriver` has to be a tick-driven state machine rather than running
-synchronously: `HarnessMod`'s `[StaticConstructorOnStartup]` fires before any scene exists, well
-before `Root_Entry.Start()` even runs its autostart check, let alone before a map is loaded. So
+**The DevMode half cannot be done from inside the game, and for a long time this document claimed
+otherwise.** `Patch_ForceDevMode` was described here as what made `Prefs.DevMode` read `true` in time
+for the autostart check. It cannot: `Verse.Root.Start()` only *queues*
+`PlayDataLoader.LoadAllPlayData()` as an async long event, and both `LoadedModManager.LoadAllActiveMods()`
+and `StaticConstructorOnStartupUtility.CallAll()` run inside it — while `Root_Entry.Start()` performs
+the autostart check synchronously on the line after `base.Start()` returns. At that moment no mod
+assembly is loaded, Harmony has patched nothing, and `HarnessRuntime.ForceDevMode` is still false, so
+vanilla reads the user's real pref. Runs only ever worked because that pref happened to be `true`;
+when it flipped to `false` the game booted to the main menu and every scenario either timed out or
+measured whatever map a human had loaded by hand. Seeding the pref in the runner is what actually
+holds. `Patch_ForceDevMode` stays, but only for `Prefs.DevMode` reads later in the boot (see the
+alerts/tutor suppression below) — it is not part of the autostart chain.
+
+`ScenarioDriver` still has to be a tick-driven state machine rather than running synchronously,
+because the map loads asynchronously and no step can touch it until it exists. So
 `ScenarioDriver.Begin()` only sets `Active = true` and stashes the spec; actual step execution
 waits for `Patch_DriveScenario`'s postfix on `Root_Play.Update()` before advancing past
 `State.WaitingForMap`.

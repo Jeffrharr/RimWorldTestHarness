@@ -10,7 +10,9 @@
 #   1. Symlinks RimWorldTestHarness and every --mod folder into RimWorld's Mods folder if not
 #      already present (a mod under test is often already symlinked as a real active mod — this
 #      script never removes a symlink it didn't create).
-#   2. Backs up the real ModsConfig.xml and any existing Saves/autostart.rws.
+#   2. Backs up the real ModsConfig.xml, Prefs.xml, and any existing Saves/autostart.rws, then seeds
+#      <devMode>True</devMode> into Prefs.xml — vanilla's autostart check is gated on it and runs
+#      before any mod assembly loads, so it cannot be forced from inside the game (see seed_devmode).
 #   3. Writes a minimal ModsConfig.xml: Core + installed DLCs + brrainz.harmony + the union of
 #      every selected scenario's requiredMods + each --mod's packageId (read from its own
 #      About/About.xml) + joof.rimworldtestharness, which goes after them so its patches wrap
@@ -110,6 +112,22 @@ fi
 PLAYER_LOG="$RUN_TMP_DIR/Player.log"
 MODSCONFIG="$CONFIG_DIR/Config/ModsConfig.xml"
 MODSCONFIG_BAK="$RUN_TMP_DIR/ModsConfig.bak.xml"
+
+# Prefs.xml is swapped for exactly one reason: <devMode>. Vanilla's autostart-save mechanism is gated
+# on Prefs.DevMode (Verse.SaveGameFilesUtility.GetAutostartSaveFile returns null when it's false), so
+# with dev mode off the game boots to the main menu and the fixture never loads — every scenario then
+# either times out or silently measures whatever map a human loaded by hand.
+#
+# This USED to be Patch_ForceDevMode's job, and that patch cannot do it. Verse.Root.Start() only
+# QUEUES PlayDataLoader.LoadAllPlayData() as an async long event; LoadedModManager.LoadAllActiveMods()
+# and StaticConstructorOnStartupUtility.CallAll() both run inside it. Root_Entry.Start() checks for the
+# autostart save synchronously on the line after base.Start() returns — before any mod assembly is
+# loaded, before Harmony has patched anything, and so before HarnessRuntime.ForceDevMode can be set.
+# Runs only ever worked because the user's ambient devMode happened to be true. Seeding it here is what
+# makes the mechanism actually hold; the patch stays for DevMode reads later in the boot.
+PREFS="$CONFIG_DIR/Config/Prefs.xml"
+PREFS_BAK="$RUN_TMP_DIR/Prefs.bak.xml"
+
 SAVES_DIR="$CONFIG_DIR/Saves"
 AUTOSTART_SAVE="$SAVES_DIR/autostart.rws"
 AUTOSTART_BAK="$RUN_TMP_DIR/autostart.bak.rws"
@@ -244,6 +262,8 @@ print_config() {
     echo "CONFIG_DIR=$CONFIG_DIR"
     echo "MODSCONFIG=$MODSCONFIG"
     echo "MODSCONFIG_BAK=$MODSCONFIG_BAK"
+    echo "PREFS=$PREFS"
+    echo "PREFS_BAK=$PREFS_BAK"
     echo "SAVES_DIR=$SAVES_DIR"
     echo "AUTOSTART_SAVE=$AUTOSTART_SAVE"
     echo "AUTOSTART_BAK=$AUTOSTART_BAK"
@@ -544,8 +564,39 @@ trap cleanup EXIT INT TERM
 # ModsConfig/Prefs lying around in /tmp is pointless. Player.log and the stderr log stay — they're the
 # post-mortem evidence every failure message points at — so the dir is only removed if it ends up
 # empty, i.e. on a clean run with nothing worth keeping.
+# Rewrites <devMode> to True in place, inserting the element if Prefs.xml doesn't carry one (RimWorld
+# omits elements left at their default). Done in python3 — already a hard dependency of this script —
+# rather than sed, because the insert case needs to find the root element's closing tag, and a regex
+# that silently matched nothing would hand back the exact failure this whole function exists to fix.
+# The run is aborted rather than continued if the result doesn't read back as true: booting anyway
+# means a scenario that either times out or measures a hand-loaded map, which is far worse than a stop.
+seed_devmode() {
+    python3 - "$PREFS" <<'PY' || fail "could not seed <devMode>True</devMode> into Prefs.xml"
+import re, sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    text = f.read()
+
+new, n = re.subn(r"<devMode>\s*\w*\s*</devMode>", "<devMode>True</devMode>", text, count=1)
+if n == 0:
+    # No <devMode> element at all: insert one just inside the root's closing tag.
+    m = re.search(r"\n(\s*)</\w+>\s*$", new)
+    if not m:
+        sys.exit("Prefs.xml has no recognisable root closing tag")
+    new = new[:m.start()] + f"\n{m.group(1)}  <devMode>True</devMode>" + new[m.start():]
+
+with open(path, "w", encoding="utf-8") as f:
+    f.write(new)
+
+if "<devMode>True</devMode>" not in open(path, encoding="utf-8").read():
+    sys.exit("devMode did not read back as True after the write")
+PY
+    log "Seeded <devMode>True</devMode> into Prefs.xml (restored on teardown)."
+}
+
 discard_run_scratch() {
-    rm -f "$MODSCONFIG_BAK" "$AUTOSTART_BAK"
+    rm -f "$MODSCONFIG_BAK" "$AUTOSTART_BAK" "$PREFS_BAK"
     [[ "$ISOLATE_SAVEDATA" == "1" ]] && rm -rf "$CONFIG_DIR"
     rmdir "$RUN_TMP_DIR" 2>/dev/null || log "Logs kept in $RUN_TMP_DIR"
 }
@@ -557,6 +608,18 @@ restore_swapped_config() {
         log "ModsConfig restored."
     else
         log "Warning: no ModsConfig backup found at $MODSCONFIG_BAK"
+    fi
+
+    # Restored from the backup rather than by flipping <devMode> back, because RimWorld rewrites the
+    # whole of Prefs.xml from memory on exit — anything else the run touched would otherwise persist.
+    # This runs after the game process has been waited on, so the game's own final write cannot land
+    # on top of the restore.
+    log "Restoring Prefs from backup..."
+    if [[ -f "$PREFS_BAK" ]]; then
+        cp "$PREFS_BAK" "$PREFS"
+        log "Prefs restored."
+    else
+        log "Warning: no Prefs backup found at $PREFS_BAK"
     fi
 
     log "Restoring Saves/autostart.rws..."
@@ -610,6 +673,11 @@ log "--- Step 2: backups ---"
 [[ -f "$MODSCONFIG" ]] || fail "ModsConfig.xml not found at $MODSCONFIG — has RimWorld been run at least once?"
 cp "$MODSCONFIG" "$MODSCONFIG_BAK"
 log "Backed up ModsConfig.xml -> $MODSCONFIG_BAK"
+
+[[ -f "$PREFS" ]] || fail "Prefs.xml not found at $PREFS — has RimWorld been run at least once?"
+cp "$PREFS" "$PREFS_BAK"
+log "Backed up Prefs.xml -> $PREFS_BAK"
+seed_devmode
 
 mkdir -p "$SAVES_DIR"
 if [[ -f "$AUTOSTART_SAVE" ]]; then
