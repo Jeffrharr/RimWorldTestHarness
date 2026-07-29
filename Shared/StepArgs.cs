@@ -15,6 +15,10 @@ public static class StepArgs
     public const string SetTimeType = "SetTime";
     public const string SetTimeHour = "hour"; // float, 0..24
 
+    // Relative sibling of SetTime. See Steps/BuiltIn/ClockSteps.cs for why both exist.
+    public const string AdvanceTimeType = "AdvanceTime";
+    public const string AdvanceTimeHours = "hours"; // float, > 0
+
     public const string FastForwardType = "FastForward";
     public const string FastForwardTicks = "ticks"; // int
 

@@ -51,6 +51,52 @@ public sealed class SetTimeStep : IStepSpec
     }
 }
 
+// AdvanceTime — move the clock FORWARD by a duration, rather than to an hour of the current day.
+//
+// WHY BOTH EXIST. SetTime is absolute and pins the day: it reads the current dayOfYear and jumps to
+// the requested hour WITHIN it. That is what you want to stage a moment ("make it 3am"), and it is
+// quietly wrong for a sequence. Asking for 00:00 right after 23:45 does not step 15 minutes forward,
+// it rewinds the clock almost a full day, back to the start of the same day.
+//
+// Nothing that depends only on hour-of-day notices — the sun is at the same angle at 00:00 whichever
+// day it is — so the bug hides in plain sight. What does notice is anything driven by ABSOLUTE time:
+// a lunar cycle advances ~50 minutes of moonrise per day, so a mod rendering moonlight sees the moon
+// jump a full day backwards, and its shadows visibly swing to a new direction. That is exactly how
+// this was found: a day-long timelapse of a lighting mod changed shadow direction at its midpoint,
+// on the one frame that crossed midnight.
+//
+// AdvanceTime cannot express that mistake. It adds a duration to the clock, so a sweep built from it
+// is monotonic by construction and rolls into the next day the way the game itself would.
+//
+// It is a JUMP, not simulation — the same as SetTime and unlike FastForward, which runs real ticks
+// so the world actually lives through them. Advancing 6 hours here does not grow crops or burn fuel.
+public sealed class AdvanceTimeStep : IStepSpec
+{
+    public string Type => StepArgs.AdvanceTimeType;
+    public ScenarioResidue Residue => ScenarioResidue.Clock;
+    public bool LiveCallable => true;
+
+    public bool TryValidate(IReadOnlyDictionary<string, string> args, out string? error)
+    {
+        if (!ArgReader.ValidateKnownArgs(args, new[] { StepArgs.AdvanceTimeHours }, out error))
+            return false;
+        if (!ArgReader.TryReadDouble(args, StepArgs.AdvanceTimeHours, 0, out double hours, out error))
+            return false;
+
+        // Zero is rejected as well as negative. A zero-hour advance is a frame that captures the same
+        // instant twice, which in a timelapse reads as a stutter rather than an error.
+        if (hours <= 0)
+        {
+            error = $"'{StepArgs.AdvanceTimeHours}' must be greater than 0 (got {ArgReader.Format(hours)}); " +
+                    $"to go to a specific hour use '{StepArgs.SetTimeType}' instead";
+            return false;
+        }
+
+        error = null;
+        return true;
+    }
+}
+
 // TimeSpeed as well as Clock: FastForward raises the game to Superfast and never lowers it, so a
 // following scenario would find the colony running while it tries to hold a moment still.
 public sealed class FastForwardStep : IStepSpec

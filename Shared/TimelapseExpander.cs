@@ -21,6 +21,12 @@ namespace RimWorldTestHarness.Shared;
 // Range is HALF-OPEN, [fromHour, toHour). A full-day 0->24 sweep therefore yields 24 distinct
 // hourly frames rather than 25 with midnight duplicated at both ends, so the stitched video loops
 // seamlessly. To include the endpoint, extend toHour by one step.
+//
+// The range MAY WRAP past midnight: toHour below fromHour (16->4) means "16:00 through to 04:00 the
+// next morning", 12 hours, with each frame's hour taken modulo 24. Half-open still holds, so 16->4
+// ends at 03:xx. This is the shape every dusk-to-moonlight sweep wants, and splitting it into a
+// 16->24 and a 0->4 step cannot substitute: the two would either collide on one prefix's frame
+// numbering or stitch as two videos with a cut at the exact moment being filmed.
 public static class TimelapseExpander
 {
     // Defaults chosen so `{"type": "Timelapse", "args": {}}` means "one full day, hourly" — the
@@ -42,10 +48,20 @@ public static class TimelapseExpander
     // turning a test run into a disk-filling incident.
     public const int MaxFrames = 512;
 
+    // The frame count, stated directly. `toHour` says where to stop and lets the count fall out of
+    // the arithmetic; `steps` says how many frames and lets the end fall out instead. Both describe
+    // the same sweep, but `steps` is the one that controls what actually matters downstream — a gif
+    // on a store page has a hard byte budget, and bytes are frames. It also expresses a full day
+    // from ANY starting hour without an ambiguous 12..12, which is the sweep a looping video wants:
+    // start at noon and the loop's seam lands where shadows are shortest instead of where they are
+    // longest and most directional.
+    public const string StepsArg = "steps";
+
     private static readonly string[] KnownArgs =
     {
         StepArgs.TimelapseFromHour,
         StepArgs.TimelapseToHour,
+        StepsArg,
         StepArgs.TimelapseStepHours,
         StepArgs.TimelapseFileNamePrefix,
         StepArgs.TimelapseSettleFrames,
@@ -85,6 +101,8 @@ public static class TimelapseExpander
     {
         public double FromHour;
         public double ToHour;
+        // 0 means "not given" — the sweep is then bounded by ToHour, as it always was.
+        public int Steps;
         public double StepHours;
         public string FileNamePrefix;
         public int SettleFrames;
@@ -101,6 +119,8 @@ public static class TimelapseExpander
             return false;
         if (!ArgReader.TryReadDouble(args, StepArgs.TimelapseToHour, DefaultToHour, out p.ToHour, out error))
             return false;
+        if (!ArgReader.TryReadInt(args, StepsArg, 0, out p.Steps, out error))
+            return false;
         if (!ArgReader.TryReadDouble(args, StepArgs.TimelapseStepHours, DefaultStepHours, out p.StepHours, out error))
             return false;
         if (!ArgReader.TryReadInt(args, StepArgs.TimelapseSettleFrames, DefaultSettleFrames, out p.SettleFrames, out error))
@@ -112,6 +132,16 @@ public static class TimelapseExpander
             return false;
 
         p.FileNamePrefix = ArgReader.ReadString(args, StepArgs.TimelapseFileNamePrefix, DefaultFileNamePrefix);
+
+        // Both bound the sweep, so giving both is two answers to one question. Honouring `steps`
+        // and ignoring `toHour` would be the quiet option and the wrong one: the author would get a
+        // video that stops somewhere other than where they wrote, and nothing would say so.
+        if (p.Steps > 0 && args.ContainsKey(StepArgs.TimelapseToHour))
+        {
+            error = $"'{StepsArg}' and '{StepArgs.TimelapseToHour}' both bound the sweep — give one " +
+                    $"('{StepsArg}' for an exact frame count, '{StepArgs.TimelapseToHour}' for an end hour)";
+            return false;
+        }
 
         return ValidateParameters(p, fps, out error);
     }
@@ -138,11 +168,27 @@ public static class TimelapseExpander
             return false;
         }
 
-        if (p.FromHour >= p.ToHour)
+        // toHour BELOW fromHour is not an error — it means the sweep wraps past midnight, and each
+        // frame's hour is taken modulo 24 (see SpanHours/AddFrame). This used to be rejected with
+        // "use two Timelapse steps", which was the wrong answer for the case that motivated the
+        // feature: filming dusk through to a high moon. Two steps cannot express it, because each
+        // writes its own prefix_0000.png sequence and the second either overwrites the first or
+        // stitches into a separate video with a cut at midnight — precisely in the middle of the
+        // moonrise the video exists to show.
+        //
+        // Equality is rejected, but only when `steps` is absent: 12..12 reads as both an empty
+        // sweep and a full day, and `steps` says which you meant without anyone having to guess.
+        if (p.Steps == 0 && p.FromHour == p.ToHour)
         {
-            error = $"'{StepArgs.TimelapseFromHour}' must be less than '{StepArgs.TimelapseToHour}' " +
-                    $"(got {Format(p.FromHour)}..{Format(p.ToHour)}); a sweep across midnight isn't " +
-                    "supported — use two Timelapse steps";
+            error = $"'{StepArgs.TimelapseFromHour}' and '{StepArgs.TimelapseToHour}' are both " +
+                    $"{Format(p.FromHour)}, which reads as either an empty sweep or a whole day — " +
+                    $"say which with '{StepsArg}' (e.g. fromHour 12, stepHours 0.25, {StepsArg} 96)";
+            return false;
+        }
+
+        if (p.Steps < 0)
+        {
+            error = $"'{StepsArg}' must not be negative (got {p.Steps})";
             return false;
         }
 
@@ -167,13 +213,26 @@ public static class TimelapseExpander
         // Rounded before the ceiling because binary floating point makes an exact division land just
         // either side of a whole number (24/1 can compute as 23.999999...), and an unrounded Ceiling
         // would turn that into an extra duplicate frame.
-        double exact = (p.ToHour - p.FromHour) / p.StepHours;
+        // An explicit step count needs no arithmetic and no rounding — it IS the answer.
+        if (p.Steps > 0)
+        {
+            count = p.Steps;
+            return WithinCap(count, p, out error);
+        }
+
+        double exact = SpanHours(p) / p.StepHours;
         count = (int)Math.Ceiling(Math.Round(exact, 6));
 
+        return WithinCap(count, p, out error);
+    }
+
+    private static bool WithinCap(int count, TimelapseParameters p, out string? error)
+    {
         if (count > MaxFrames)
         {
             error = $"{count} frames exceeds the {MaxFrames}-frame cap — raise " +
-                    $"'{StepArgs.TimelapseStepHours}' (currently {Format(p.StepHours)})";
+                    $"'{StepArgs.TimelapseStepHours}' (currently {Format(p.StepHours)}) or lower " +
+                    $"'{StepsArg}'";
             return false;
         }
 
@@ -181,13 +240,31 @@ public static class TimelapseExpander
         return true;
     }
 
+    // Hours covered by the sweep. A wrapping range (toHour below fromHour) runs to midnight and on
+    // into the next day, so its span is the two pieces added, not the negative difference.
+    private static double SpanHours(TimelapseParameters p) =>
+        p.ToHour > p.FromHour ? p.ToHour - p.FromHour : 24 - p.FromHour + p.ToHour;
+    // Equal hours fall into the second branch and yield 24 - h + h = 24, which is exactly the
+    // full-day reading documented above — no special case needed.
+
     private static void AddFrame(List<ScenarioStep> into, TimelapseParameters p, int index)
     {
-        // Computed from the index rather than accumulated, so rounding error can't drift across a
-        // long sweep.
-        double hour = p.FromHour + index * p.StepHours;
-
-        into.Add(Step(StepArgs.SetTimeType, StepArgs.SetTimeHour, Format(hour)));
+        // Frame 0 is the only ABSOLUTE jump; every later frame ADVANCES by one step.
+        //
+        // This used to be one SetTime per frame, with the hour computed as
+        // (FromHour + index * StepHours) % 24. That modulo is what broke sweeps crossing midnight:
+        // SetTime pins the current day, so asking for 00:00 after 23:45 rewound the clock nearly a
+        // full day instead of stepping forward 15 minutes. Hour-of-day effects could not tell —
+        // the sun sits at the same angle at 00:00 either way — but the moon is driven by absolute
+        // time, so it jumped a day backwards and its shadows swung to a new direction on that one
+        // frame, mid-video. Relative steps cannot express that error.
+        //
+        // It also removes the need to know anything about wrapping here: the clock rolls into the
+        // next day by itself, exactly as it would if the game were running.
+        if (index == 0)
+            into.Add(Step(StepArgs.SetTimeType, StepArgs.SetTimeHour, Format(p.FromHour)));
+        else
+            into.Add(Step(StepArgs.AdvanceTimeType, StepArgs.AdvanceTimeHours, Format(p.StepHours)));
 
         if (p.SettleFrames > 0)
             into.Add(Step(StepArgs.WaitType, StepArgs.WaitFrames, ArgReader.Format(p.SettleFrames)));
