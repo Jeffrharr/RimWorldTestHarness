@@ -674,6 +674,103 @@ base with no undo. Anything added to that dev action inherits the same exposure.
 And the default `grid` layout is separate pillars rather than a closed wall rectangle, both because
 each pillar throws its own readable shadow and because a rectangle would read as a room.
 
+## Reaching an Odyssey orbital map
+
+Everything the harness could reach until now was a *surface* map. Odyssey's orbital maps sit on a
+separate `PlanetLayer` (`PlanetLayerDefOf.Orbit`), carry the vacuum `Orbit` biome, and are 200 km up
+— and a whole class of lighting behaviour only manifests there. `LandInOrbit` is the step that gets
+a scenario onto one.
+
+### Generate the real thing; never dress up a surface map
+
+The cheap version of this step is two lines: keep the fixture's surface map and repoint its tile at
+the `Orbit` biome (`SetBiome` already does exactly that). It is also worthless for the thing it would
+be used for. Such a map keeps the surface `PlanetLayer`, so its lat/long still comes off the surface
+sphere; keeps surface-generated terrain, rock and roof; and reads non-vacuum from per-cell
+`VacuumUtility.GetVacuum`, which looks at the room a cell is actually in rather than at a def field.
+A probe measuring vacuum lighting against that would validate against a prop and report green — the
+single failure mode this repo exists to prevent, dressed as a convenience.
+
+So the step walks vanilla's own route, end to end:
+
+| What | Vanilla call | Why it's the real one |
+|---|---|---|
+| Find/create the layer | `WorldGrid.PlanetLayers`, else `RegisterPlanetLayer(PlanetLayerDefOf.Orbit, PlanetLayerSettingsDefOf.Orbit.settings)` | The same call `WorldGrid.CreateRequiredLayers` makes at world gen from the Odyssey scenario's `ScenPart_PlanetLayer`. Needed only for a fixture save made before the DLC was installed — which the runner will happily load with the DLC active. |
+| Populate it | `PlanetLayer.RunWorldGeneration()` | `WorldGenStep_Tiles` is what stamps each tile with its layer def's `DefaultBiome`. The vacuum biome is *generated onto* the tile, not assigned by us. |
+| Generate the map | `GetOrGenerateMapUtility.GetOrGenerateMap(tile, size, layer.Def.DefaultWorldObject)` | The call `SettleInEmptyTileUtility` and every transport-pod arrival use. It creates the `SpaceMapParent`, registers it, and runs `MapGenerator.GenerateMap` with that parent's own `MapGeneratorDef` — Odyssey's `Space` generator. |
+
+Creating the map parent is also what makes the layer legal at all: `RimWorld.OrbitLayer.CanSelectLayer`
+refuses the layer until `Find.WorldObjects.AnyWorldObjectOnLayer(this)` is true. Doing the real thing
+satisfies that precondition as a side effect, which is why there is no separate "register a dummy
+world object" step.
+
+Generation runs **synchronously**, not as a queued long event. The driver already refuses to advance
+while `LongEventHandler.ShouldWaitForEvent`, so a queued event would run *after* the step returned and
+the postconditions below would have nothing left to check. `MapGenerator.GenerateMap` does not need a
+current long event — it only sets and restores `ProgramState`, and `SetCurrentEventText` is a no-op
+when no event is running.
+
+### The step checks its own postconditions
+
+Three of them, and the step fails rather than reports success: the map's `PlanetTile.LayerDef` is the
+orbit layer, its `BiomeDef.inVacuum` is true, and (on a freshly generated map) its centre cell reads
+`GetVacuum > 0`. The third is the one a dressed-up surface map cannot fake — the first two are single
+values anything could assign. Without these, a green run would mean "a step that intends to reach
+orbit did not throw", which is not the same claim.
+
+### Latitude is required, and pinned anyway
+
+RimWorld's orbits are stationary: `PlanetLayer.LongLatOf` derives lat/long from a fixed tile centre,
+and nothing gives an orbit tile a period or a phase. The platform hangs over one lat/long forever, so
+that lat/long alone fixes its day length and sun path. A scenario that landed "somewhere in orbit"
+would produce numbers nothing could be pinned against, which is the whole point of the harness. Hence
+no default.
+
+Naming a latitude is still not enough on its own. The orbit layer is an icosphere subdivided five
+times, so its tiles land where the subdivision puts them: "latitude 45" resolves to a tile at 45.32°
+on a 30%-coverage world. The step therefore *also* pins `HarnessRuntime.ForcedLatitude`, exactly as
+`SetTile` does, so the sun path every probe reads is the latitude that was asked for on every world.
+Both numbers go in the run log, because a probe value reconstructed months later has to be traceable
+to the one it was computed from.
+
+Longitude is optional and usually best left out. It changes the local-time offset, not the sun's
+elevation, and a planet layer is only generated across the world's *view angle*
+(`IcosahedronGenerator` takes it as a spherical cap), so on a small-coverage world a specific lat/long
+pair may simply never have been generated while its latitude band has thousands of tiles. When the
+nearest tile is further than `maxOffsetDegrees` (default 5, a bit over one tile width) the step fails
+and names what it found, rather than landing in a band nobody asked for.
+
+### Skip, don't fail, without the DLC
+
+Odyssey is a paid expansion. A box without it cannot be made to run an orbital scenario by editing
+any mod, so failing would paint a permanent red on a healthy install. `StepOutcome.Skip(reason)` is
+the third outcome alongside success and failure: the driver abandons the rest of that scenario and
+records `Skipped` + `SkipReason` on the report.
+
+Abandoning the *scenario* rather than just the step is deliberate. The steps after `LandInOrbit` were
+written expecting the world it was supposed to build; running them would pile up failures pointing
+anywhere but at the real cause.
+
+`Pass` is deliberately left alone — a skipped scenario with nothing else wrong has no errors and no
+probe checks, so the existing gate already computes `true`, and anything recorded before the skip
+still counts against it. That means a skip is exactly the case where a green run means less than it
+looks like, and the only available mitigation is saying so everywhere the result is read: the finish
+line in `Player.log`, the per-scenario line in `run_test.sh`, and a suite-level "skipped N/M
+scenario(s), which verified NOTHING" summary.
+
+`Runner/run_test.sh --without-dlc <packageId>` exists so that branch is testable on a machine that
+owns the DLC. It deactivates rather than uninstalls, because `ModsConfig.OdysseyActive` reads the
+active-mod list. (A fixture save *made* with a DLC cannot be loaded without it — that is vanilla, and
+it crashes rather than degrading — so the flag pairs with a `-quicktest` scenario.)
+
+### Residue: `NewMap`, not `Map`
+
+`ScenarioResidue.Map` describes edits to the map a scenario was handed. `LandInOrbit` leaves the
+fixture's colony completely untouched and adds a *different* map on a different layer, then switches
+to it. The dangerous half is the switch: a following scenario that believed itself isolated would
+open on the orbital platform and measure the wrong world while every step in it reported success. A
+flag of its own, outside `SoftResettable`, so the planner reloads around it.
+
 ## API compatibility tests
 
 `Tests/RimWorldTestHarness.ApiTests/` (Mono.Cecil, pattern:

@@ -101,6 +101,20 @@ nothing behind," which is the one direction that quietly breaks isolation. Addin
 4. Update `SoftResettable_AndRequiresReload_PartitionAll`, which names the reload-only flags on
    purpose so this is never accidental.
 
+### Steps that need a DLC
+
+Return `StepOutcome.Skip("...")` rather than `StepOutcome.Fail(...)` when the step cannot run because
+an *expansion* is inactive — check `ModsConfig.<Dlc>Active`. The driver abandons the rest of that
+scenario and marks it `Skipped` with your reason; `Pass` is untouched, so a run on a box without the
+DLC stays green rather than red over something no code change can fix. `LandInOrbit` is the worked
+example.
+
+Use this only for "this install cannot run this", never for "this went wrong" — a missing def, a
+malformed arg or a failed postcondition is a `Fail`. And exercise the branch: pass
+`--without-dlc <packageId>` to `run_test.sh` (with a `-quicktest` scenario, since a fixture save made
+with a DLC cannot load without it). An untested skip is the same green-means-less hazard as an
+untested assert.
+
 ### Composite steps
 
 A step that desugars into other steps at load time (like `Timelapse`) also implements

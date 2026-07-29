@@ -1,0 +1,26 @@
+{
+  "name": "orbital_platform",
+  "saveFile": "minimal_colony.rws",
+  "steps": [
+    { "type": "LandInOrbit", "args": { "latitude": "45", "mapSize": "150" } },
+    { "type": "SetTerrain", "args": { "def": "OrbitalPlatform", "width": "30", "height": "30" } },
+    { "type": "PlaceThings", "args": { "def": "Wall", "stuff": "Steel", "layout": "grid", "cols": "3", "rows": "3", "spacing": "6" } },
+    { "type": "LookAt", "args": { "zoom": "18" } },
+    { "type": "SetSeason", "args": { "dayOfYear": "15" } },
+    { "type": "SetTime", "args": { "hour": "12" } },
+    { "type": "Wait", "args": { "frames": "10" } },
+    { "type": "Screenshot", "args": { "fileName": "orbit_noon.png" } },
+    { "type": "SetTime", "args": { "hour": "0" } },
+    { "type": "Wait", "args": { "frames": "10" } },
+    { "type": "Screenshot", "args": { "fileName": "orbit_midnight.png" } },
+    {
+      "type": "Assert",
+      "args": {
+        "kind": "vision",
+        "images": "orbit_noon.png, orbit_midnight.png",
+        "expect": "Both frames show an orbital platform in open space, lit at noon and dark at midnight.",
+        "prompt": "These two frames are the same RimWorld map at local noon and local midnight, on an Odyssey orbital platform 200km above latitude 45. Confirm: (1) the surroundings outside the square platform are open space, not planet terrain — no grass, soil, rock or water anywhere; (2) the noon frame is brightly lit and the walls cast visible shadows; (3) the midnight frame is substantially darker than the noon frame. Fail if the map looks like a planet surface."
+      }
+    }
+  ]
+}
