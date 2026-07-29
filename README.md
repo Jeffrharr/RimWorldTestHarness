@@ -138,6 +138,40 @@ this repo's `Scenarios/`.
 | `StartCondition` | `conditionDef`, `durationHours`, `agedHours` | Starts a vanilla `GameConditionDef` (`SolarFlare`, `Eclipse`, …). `durationHours` defaults to 24; ≤ 0 means permanent. `agedHours` back-dates the start tick so the condition is "born aged" and any fade-in has already elapsed. |
 | `SetWeather` | `weatherDef`, `instant` | Transitions to a `WeatherDef` (`Rain`, `Clear`, `Fog`, …) — weather drives sky glow and shadow strength. `instant` defaults to true and completes the blend immediately; false leaves the natural transition. |
 | `SetBiome` | `biomeDef` | Repoints the map's world tile at a `BiomeDef` (`Undercave`, `IceSheet`, `Orbit`, …). A lot of lighting behaviour is gated on the biome rather than the map — `disableSkyLighting`, `disableShadows`, and `baseWeatherCommonalities` deciding whether the map has changeable weather at all — and with one save fixture this is the only way to reach those branches. Dirties `ScenarioResidue.Biome`, which requires a reload, so a suite will isolate around it. |
+| `LandInOrbit` | `latitude`, `longitude`, `maxOffsetDegrees`, `mapSize`, `unfog` | **Generates a real Odyssey orbital map** at the requested lat/long and switches to it, so every later step in the scenario runs on the platform. `latitude` (−90..90) is required; `longitude` (−180..180) is optional and usually best omitted. See below. |
+
+`LandInOrbit` is not `SetBiome` with extra steps. It resolves a tile on the `Orbit` `PlanetLayer` and
+runs Odyssey's own space map generator for it through `GetOrGenerateMapUtility` — the same call
+settling a caravan makes. The layer, the vacuum `Orbit` biome and per-cell
+`VacuumUtility.GetVacuum` are all arrived at *by generation*, and the step fails if any of them
+comes out wrong. Repointing a surface map's biome instead would leave the surface `PlanetLayer`,
+surface lat/long, surface terrain and non-vacuum cells — a prop that anything measuring vacuum
+lighting would happily validate against.
+
+- **`latitude` is required, not defaulted.** RimWorld's orbits are stationary, so the platform's
+  latitude alone fixes its day length and sun path. It is also *pinned* the way `SetTile` pins one
+  (`WorldGrid.LongLatOf` is patched), because the orbit layer's tiles are a couple of degrees wide
+  and land where the icosphere subdivision puts them, not where you asked. The run log prints both
+  the tile's real lat/long and the pinned value.
+- **Omit `longitude` unless you need it.** Longitude changes the local-time offset, not the sun's
+  elevation, and a planet layer is only generated across the world's *view angle* — so on a
+  small-coverage world a specific lat/long pair may not exist while its latitude band has plenty of
+  tiles. With no longitude the step takes the nearest tile in that band.
+- **It fails loudly if it can't get close.** `maxOffsetDegrees` (default 5) is how far the resolved
+  tile may sit from the request; past that the step fails and names the nearest tile it found, rather
+  than landing in a latitude band nobody asked for.
+- **`mapSize`** (50..1000, default the world's own) — map generation is the most expensive thing in
+  the harness, so a probe-only scenario should ask for a small one. **`unfog`** defaults to `true`
+  because the space generator fogs the map and fogged cells draw nothing.
+- **Without Odyssey it SKIPS, it does not fail.** The scenario stops at that step, is reported
+  `Skipped` with a reason, and the run stays green — a paid DLC missing is not something editing a
+  mod can fix. See "Skipped scenarios" below.
+- Dirties `ScenarioResidue.NewMap | ScenarioResidue.Latitude`; `NewMap` requires a reload, so a suite
+  isolates around it.
+
+```json
+{ "type": "LandInOrbit", "args": { "latitude": "45", "mapSize": "150" } }
+```
 
 **Verification**
 
@@ -340,7 +374,13 @@ authored scenarios can't overwrite each other's images.
 | `--isolation=auto\|always\|never` | How hard a suite works to isolate one scenario from the next. |
 | `--no-teardown` | Leave symlinks / `ModsConfig` / `autostart.rws` in place for post-mortem debugging. |
 | `--delete-frames` | Delete timelapse PNGs once stitched into video. |
+| `--without-dlc <packageId>` | Leave an installed DLC out of this run's `ModsConfig` (e.g. `ludeon.rimworld.odyssey`). Repeatable. For exercising a scenario's skip-without-the-DLC path on a machine that owns the DLC — otherwise that branch is code nobody can run. |
 | `--print-config` | Print every path the run would use and exit — touching, locking, and creating nothing. |
+
+`--without-dlc` deactivates rather than uninstalls, which is the right lever: `ModsConfig.<Dlc>Active`
+reads the active-mod list, not the disk. Note that a **fixture save made with the DLC cannot be
+loaded without it** — that's vanilla, and it will crash the game rather than skip — so pair
+`--without-dlc` with a `-quicktest` scenario (empty `saveFile`) or a fixture made without it.
 
 Overridable environment: `RWTH_CONFIG_DIR` (game save-data root), `RWTH_RUN_TMP_DIR`,
 `RWTH_LOCK_FILE`, and `RWTH_ISOLATE_SAVEDATA=1` (opt-in: gives the run its own save-data root via
@@ -376,6 +416,20 @@ and "nothing was verified" otherwise reads exactly like "everything passed". Sam
 suite level: an empty suite fails, and scenarios a mid-suite abort never reached are listed with an
 explicit "did not run" error rather than quietly omitted. Screenshots never affect `Pass`; they're a
 complementary review channel, not a gate.
+
+### Skipped scenarios
+
+A step can declare a scenario **inapplicable to this install** rather than broken — today only
+`LandInOrbit` without Odyssey. When it does, the rest of that scenario is abandoned, the report gains
+`"Skipped": true` and a `SkipReason`, and `Pass` is computed as usual (so with nothing else wrong it
+stays `true` and the run exits 0). A box without a paid DLC should not go red over something no edit
+to any mod can fix.
+
+That is the one case where a green result genuinely means less than it looks like, so the only
+mitigation is volume: `Player.log` prints `SKIPPED: <reason>` on the scenario's finish line,
+`run_test.sh` prints it under the scenario and again as a suite-level `skipped N/M scenario(s), which
+verified NOTHING` summary. Anything recorded *before* the skip — an errored earlier step, a failed
+probe — still gates `Pass` as normal. Skipping stops a scenario; it does not absolve it.
 
 ---
 
