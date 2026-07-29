@@ -1248,6 +1248,234 @@ public class ApiCompatibilityTests
             "GenGrid.Standable(IntVec3, Map) no longer exists — SpawnPawns can't tell a standable cell from a wall");
     }
 
+    // --- LandInOrbit: Odyssey's orbital map-generation path ---
+    //
+    // Every member below is one this step calls to build a REAL orbital map rather than dress a
+    // surface one up as one, so losing any of them silently would leave exactly the fake the step
+    // exists to avoid. They live in the base assembly (all DLC code ships there), so these tests run
+    // whether or not Odyssey is installed — which is the point: they check the API, not the licence.
+
+    [Test]
+    public void PlanetLayerDefOf_OrbitExists()
+    {
+        var type = GetType(_game, "RimWorld.PlanetLayerDefOf");
+        Assert.That(type, Is.Not.Null);
+        var field = type!.Fields.SingleOrDefault(f => f.Name == "Orbit");
+        Assert.That(field, Is.Not.Null,
+            "PlanetLayerDefOf.Orbit no longer exists — LandInOrbit can't identify the orbit layer");
+        Assert.That(field!.FieldType.FullName, Is.EqualTo("RimWorld.PlanetLayerDef"));
+    }
+
+    [Test]
+    public void PlanetLayerSettingsDefOf_OrbitExists()
+    {
+        var type = GetType(_game, "RimWorld.PlanetLayerSettingsDefOf");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(type!.Fields.SingleOrDefault(f => f.Name == "Orbit"), Is.Not.Null,
+            "PlanetLayerSettingsDefOf.Orbit no longer exists — LandInOrbit can't register an orbit " +
+            "layer into a save that predates Odyssey");
+        var settingsDef = GetType(_game, "RimWorld.PlanetLayerSettingsDef");
+        Assert.That(settingsDef!.Fields.SingleOrDefault(f => f.Name == "settings"), Is.Not.Null,
+            "PlanetLayerSettingsDef.settings no longer exists — there is nothing to register the layer with");
+    }
+
+    // OrbitLayer.CanSelectLayer is the precondition that made this step necessary in the first place:
+    // the layer refuses selection until a world object exists on it. We satisfy it by creating the map
+    // parent, so an override that stopped existing would mean the constraint moved somewhere else.
+    [Test]
+    public void OrbitLayer_CanSelectLayer_OverridesPlanetLayer()
+    {
+        var orbit = GetType(_game, "RimWorld.OrbitLayer");
+        var planetLayer = GetType(_game, "RimWorld.Planet.PlanetLayer");
+        Assert.That(orbit, Is.Not.Null, "RimWorld.OrbitLayer no longer exists");
+        Assert.Multiple(() =>
+        {
+            Assert.That(orbit!.BaseType?.FullName, Is.EqualTo("RimWorld.Planet.PlanetLayer"),
+                "OrbitLayer no longer derives from PlanetLayer");
+            Assert.That(orbit.Methods.SingleOrDefault(m => m.Name == "CanSelectLayer"), Is.Not.Null,
+                "OrbitLayer.CanSelectLayer no longer exists — its world-object precondition moved");
+            Assert.That(planetLayer!.Methods.SingleOrDefault(
+                    m => m.Name == "CanSelectLayer" && m.IsVirtual), Is.Not.Null,
+                "PlanetLayer.CanSelectLayer is no longer virtual — OrbitLayer's override is orphaned");
+        });
+    }
+
+    [Test]
+    public void WorldObjects_AnyWorldObjectOnLayer_Exists()
+    {
+        var type = GetType(_game, "RimWorld.Planet.WorldObjectsHolder");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(type!.Methods.SingleOrDefault(m => m.Name == "AnyWorldObjectOnLayer"), Is.Not.Null,
+            "WorldObjectsHolder.AnyWorldObjectOnLayer no longer exists — the check OrbitLayer gates " +
+            "selection on is gone, so LandInOrbit's map parent may no longer be what unlocks the layer");
+    }
+
+    // The layer-side members LandInOrbit reads: the registry it looks the orbit layer up in, and the
+    // registration call it falls back to for a save with no orbit layer in it.
+    [Test]
+    public void WorldGrid_PlanetLayerMembersExist()
+    {
+        var type = GetType(_game, "RimWorld.Planet.WorldGrid");
+        Assert.That(type, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            Assert.That(type!.Properties.SingleOrDefault(p => p.Name == "PlanetLayers")?.GetMethod,
+                Is.Not.Null, "WorldGrid.PlanetLayers no longer exists — LandInOrbit can't find the orbit layer");
+            Assert.That(type.Methods.Any(m =>
+                    m.Name == "RegisterPlanetLayer" && m.Parameters.Count >= 2 &&
+                    m.Parameters[0].ParameterType.FullName == "RimWorld.PlanetLayerDef" &&
+                    m.Parameters[1].ParameterType.FullName == "RimWorld.PlanetLayerSettings"),
+                Is.True,
+                "WorldGrid.RegisterPlanetLayer(PlanetLayerDef, PlanetLayerSettings, ...) no longer " +
+                "exists — a save predating Odyssey can't be given an orbit layer");
+        });
+    }
+
+    [Test]
+    public void PlanetLayer_TileGeometryMembersExist()
+    {
+        var type = GetType(_game, "RimWorld.Planet.PlanetLayer");
+        Assert.That(type, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            Assert.That(type!.Properties.SingleOrDefault(p => p.Name == "Def")?.GetMethod, Is.Not.Null,
+                "PlanetLayer.Def no longer exists — LandInOrbit can't tell an orbit layer from a surface one");
+            Assert.That(type.Properties.SingleOrDefault(p => p.Name == "TilesCount")?.GetMethod, Is.Not.Null,
+                "PlanetLayer.TilesCount no longer exists — there is nothing to iterate to find a tile");
+            var longLat = type.Methods.SingleOrDefault(m =>
+                m.Name == "LongLatOf" && m.Parameters.Count == 1 &&
+                m.Parameters[0].ParameterType.FullName == "System.Int32");
+            Assert.That(longLat, Is.Not.Null,
+                "PlanetLayer.LongLatOf(int) no longer exists — LandInOrbit can't resolve a tile by lat/long");
+            Assert.That(longLat!.ReturnType.FullName, Is.EqualTo("UnityEngine.Vector2"));
+            Assert.That(type.Methods.Any(m => m.Name == "RunWorldGeneration"), Is.True,
+                "PlanetLayer.RunWorldGeneration no longer exists — a freshly registered orbit layer " +
+                "would have geometry but no tiles, and every lookup on it would throw");
+        });
+    }
+
+    // PlanetLayerDef.DefaultBiome/DefaultWorldObject are what make the generated map genuinely
+    // orbital: the biome WorldGenStep_Tiles stamps on each tile, and the MapParent def whose own
+    // MapGeneratorDef is Odyssey's space generator.
+    [Test]
+    public void PlanetLayerDef_DefaultsExist()
+    {
+        var type = GetType(_game, "RimWorld.PlanetLayerDef");
+        Assert.That(type, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            var worldObject = type!.Properties.SingleOrDefault(p => p.Name == "DefaultWorldObject");
+            Assert.That(worldObject?.GetMethod, Is.Not.Null,
+                "PlanetLayerDef.DefaultWorldObject no longer exists — LandInOrbit has nothing to hang a map on");
+            Assert.That(worldObject!.PropertyType.FullName, Is.EqualTo("RimWorld.WorldObjectDef"));
+            Assert.That(type.Properties.SingleOrDefault(p => p.Name == "DefaultBiome")?.GetMethod,
+                Is.Not.Null,
+                "PlanetLayerDef.DefaultBiome no longer exists — orbit tiles would not be stamped vacuum");
+            Assert.That(type.Fields.SingleOrDefault(f => f.Name == "elevationString"), Is.Not.Null,
+                "PlanetLayerDef.elevationString no longer exists — the run log can't say how high up it landed");
+        });
+    }
+
+    // The generation entry point itself — the same call SettleInEmptyTileUtility makes. Using vanilla's
+    // own helper (rather than hand-rolling MapParent creation plus MapGenerator.GenerateMap) is what
+    // keeps the harness on the real path, so its signature is worth pinning.
+    [Test]
+    public void GetOrGenerateMapUtility_SizedOverloadExists()
+    {
+        var type = GetType(_game, "Verse.GetOrGenerateMapUtility");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "GetOrGenerateMap" &&
+            m.Parameters.Count >= 3 &&
+            m.Parameters[0].ParameterType.FullName == "RimWorld.Planet.PlanetTile" &&
+            m.Parameters[1].ParameterType.FullName == "Verse.IntVec3" &&
+            m.Parameters[2].ParameterType.FullName == "RimWorld.WorldObjectDef");
+        Assert.That(method, Is.Not.Null,
+            "GetOrGenerateMapUtility.GetOrGenerateMap(PlanetTile, IntVec3, WorldObjectDef, ...) no " +
+            "longer exists — LandInOrbit can't generate an orbital map through vanilla's own path");
+        Assert.That(method!.ReturnType.FullName, Is.EqualTo("Verse.Map"));
+    }
+
+    [Test]
+    public void PlanetTile_LayerConstructorAndLayerDefExist()
+    {
+        var type = GetType(_game, "RimWorld.Planet.PlanetTile");
+        Assert.That(type, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            Assert.That(type!.Methods.Any(m =>
+                    m.IsConstructor && m.Parameters.Count == 2 &&
+                    m.Parameters[0].ParameterType.FullName == "System.Int32" &&
+                    m.Parameters[1].ParameterType.FullName == "RimWorld.Planet.PlanetLayer"),
+                Is.True,
+                "PlanetTile(int, PlanetLayer) no longer exists — LandInOrbit can't name a tile ON the orbit layer");
+            Assert.That(type.Properties.SingleOrDefault(p => p.Name == "LayerDef")?.GetMethod, Is.Not.Null,
+                "PlanetTile.LayerDef no longer exists — the step can't verify the map it built is in orbit");
+            Assert.That(type.Fields.SingleOrDefault(f => f.Name == "Invalid"), Is.Not.Null,
+                "PlanetTile.Invalid no longer exists — the step's failure path has no tile to return");
+        });
+    }
+
+    // The postcondition check. BiomeDef.inVacuum is on the BASE BiomeDef (all DLC code ships in the
+    // base assembly), which is what lets the harness verify vacuum without a soft reference.
+    [Test]
+    public void BiomeDef_InVacuumExists()
+    {
+        var type = GetType(_game, "RimWorld.BiomeDef");
+        Assert.That(type, Is.Not.Null);
+        var field = type!.Fields.SingleOrDefault(f => f.Name == "inVacuum");
+        Assert.That(field, Is.Not.Null,
+            "BiomeDef.inVacuum no longer exists — LandInOrbit can't prove the map it generated is a vacuum map");
+        Assert.That(field!.FieldType.FullName, Is.EqualTo("System.Boolean"));
+    }
+
+    [Test]
+    public void VacuumUtility_GetVacuumExists()
+    {
+        var type = GetType(_game, "Verse.VacuumUtility");
+        Assert.That(type, Is.Not.Null);
+        var method = type!.Methods.SingleOrDefault(m =>
+            m.Name == "GetVacuum" && m.Parameters.Count == 2 &&
+            m.Parameters[0].ParameterType.FullName == "Verse.IntVec3" &&
+            m.Parameters[1].ParameterType.FullName == "Verse.Map");
+        Assert.That(method, Is.Not.Null,
+            "VacuumUtility.GetVacuum(IntVec3, Map) no longer exists — nothing can check per-cell vacuum " +
+            "on a generated orbital map, which is how a dressed-up surface map would be caught");
+    }
+
+    [Test]
+    public void ModsConfig_OdysseyActiveExists()
+    {
+        var type = GetType(_game, "Verse.ModsConfig");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(type!.Properties.SingleOrDefault(p => p.Name == "OdysseyActive")?.GetMethod,
+            Is.Not.Null,
+            "ModsConfig.OdysseyActive no longer exists — LandInOrbit can't tell 'no DLC' (skip) from 'broken' (fail)");
+    }
+
+    // Switching to the generated map. A settable Game.CurrentMap is what makes every later step in the
+    // scenario run against the platform instead of the fixture colony.
+    [Test]
+    public void Game_CurrentMap_IsSettable()
+    {
+        var type = GetType(_game, "Verse.Game");
+        Assert.That(type, Is.Not.Null);
+        var property = type!.Properties.SingleOrDefault(p => p.Name == "CurrentMap");
+        Assert.That(property?.SetMethod, Is.Not.Null,
+            "Game.CurrentMap is no longer settable — LandInOrbit can generate an orbital map but not move to it");
+        Assert.That(type.Methods.Any(m => m.Name == "FindMap"), Is.True,
+            "Game.FindMap no longer exists — LandInOrbit can't reuse a platform it already generated");
+    }
+
+    [Test]
+    public void FogGrid_ClearAllFogExists()
+    {
+        var type = GetType(_game, "Verse.FogGrid");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(type!.Methods.SingleOrDefault(m => m.Name == "ClearAllFog"), Is.Not.Null,
+            "FogGrid.ClearAllFog no longer exists — a freshly generated orbital map would screenshot black");
+    }
+
     // --- helpers ---
 
     private static TypeDefinition? GetType(ModuleDefinition module, string fullName) =>

@@ -3,6 +3,7 @@ using System.Linq;
 using NUnit.Framework;
 using RimWorldTestHarness.Shared;
 using RimWorldTestHarness.Shared.Steps;
+using RimWorldTestHarness.Shared.Steps.BuiltIn;
 
 namespace RimWorldTestHarness.Tests;
 
@@ -26,6 +27,7 @@ public class StepRegistryTests
             StepArgs.PlaceThingsType, StepArgs.SetTerrainType, StepArgs.SetRoofType,
             StepArgs.LookAtType,
             StepArgs.SpawnPawnType, StepArgs.TimelapseType, "SetWeather", "SetBiome", "Assert",
+            LandInOrbitStep.StepType,
         };
 
         Assert.That(StepRegistry.KnownTypes, Is.EquivalentTo(expected));
@@ -63,6 +65,7 @@ public class StepRegistryTests
     [TestCase(StepArgs.StartConditionType)]
     [TestCase("SetWeather")]
     [TestCase("SetBiome")]
+    [TestCase(LandInOrbitStep.StepType)]
     public void MutatingSteps_RequireAReload(string stepType)
     {
         ScenarioResidue residue = ScenarioResidueAnalyzer.OfStep(stepType);
