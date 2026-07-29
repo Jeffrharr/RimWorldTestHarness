@@ -357,6 +357,15 @@ public static class LiveCommandDriver
             return;
         }
 
+        // No step that can skip is LiveCallable today, so this is defence for a third-party one that
+        // is. Answered as an explicit "skipped" rather than a bare OK: the caller asked for something
+        // this install cannot do, and a silent success would be a lie about a verb that did nothing.
+        if (outcome.SkipReason != null)
+        {
+            RespondOk(req, new Dictionary<string, string> { ["skipped"] = outcome.SkipReason });
+            return;
+        }
+
         if (outcome.ForcedLatitude is float latitude)
             HarnessRuntime.ForcedLatitude = latitude;
 

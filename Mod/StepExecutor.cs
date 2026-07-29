@@ -22,12 +22,23 @@ public sealed class StepOutcome
     public VisionAssert? VisionAssert;  // Assert(kind=vision): the rubric+evidence packet to record
     public string? Error;           // non-null => the action failed; nothing else is meaningful
 
+    // Non-null => this install cannot run the scenario at all and the rest of it should be abandoned
+    // WITHOUT failing (a missing DLC, not a missing def). Distinct from Error on purpose: the two
+    // deserve opposite exit codes, and folding "inapplicable" into "broken" would make a
+    // non-Odyssey box report red over something no edit to any mod could fix. It is deliberately
+    // scenario-wide rather than step-wide — the steps after a skipped one were written expecting the
+    // world the skipped step was supposed to build, so running them would produce failures pointing
+    // anywhere but at the real cause.
+    public string? SkipReason;
+
     // Post-effect waits the driver must satisfy before the NEXT command runs.
     public int WaitFrames;                  // screenshot flush countdown (frames)
     public bool WaitFastForward;            // true => wait until TicksGame >= FastForwardTargetTicksGame
     public int FastForwardTargetTicksGame;
 
     public static StepOutcome Fail(string error) => new StepOutcome { Error = error };
+
+    public static StepOutcome Skip(string reason) => new StepOutcome { SkipReason = reason };
 }
 
 // The bits of live-game context a step needs that differ between callers. Kept tiny and explicit

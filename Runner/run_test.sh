@@ -49,6 +49,9 @@
 #   --delete-frames        delete timelapse PNGs once stitched
 #   --isolation=POLICY     auto (default) | always | never — how hard a suite works to isolate one
 #                          scenario from the next. See Shared/SuitePlan.cs.
+#   --without-dlc <id>     leave an installed DLC out of the run's ModsConfig (e.g.
+#                          ludeon.rimworld.odyssey). Repeatable. For exercising a scenario's
+#                          skip-without-the-DLC path on a machine that owns the DLC.
 #   --print-config         print the resolved paths for this run and exit without touching anything
 #
 # A suite list file is one scenario path per line; '#' starts a whole-line comment, and relative
@@ -164,18 +167,29 @@ PRINT_CONFIG=0
 # and only the folder knows both.
 MODS_UNDER_TEST=()
 
+# DLC packageIds to leave OUT of the run's ModsConfig even though they are installed. Exists so a
+# scenario's degrade-without-the-DLC path can actually be exercised on a machine that owns the DLC —
+# which is the only machine anyone develops such a scenario on. Without it, a step's "skip when the
+# DLC is absent" branch is code nobody can run, and an untested skip is the same green-means-less
+# failure as an untested assert. Deactivating rather than uninstalling is exactly right: ModsConfig
+# is what ModsConfig.OdysseyActive and friends read, not what is on disk.
+EXCLUDED_DLC=()
+
 abspath() { echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; }
 
 usage() {
     echo "[run_test] usage: run_test.sh <scenario.json> [more.json ...] [--suite <list.txt>]" >&2
     echo "[run_test]        [--mod <mod-folder>]... [--no-teardown] [--delete-frames]" >&2
-    echo "[run_test]        [--isolation=auto|always|never] [--print-config]" >&2
+    echo "[run_test]        [--isolation=auto|always|never] [--without-dlc <packageId>]..." >&2
+    echo "[run_test]        [--print-config]" >&2
     exit 2
 }
 
 while (( $# )); do
     case "$1" in
         --no-teardown) NO_TEARDOWN=1 ;;
+        --without-dlc) shift; EXCLUDED_DLC+=("$(echo "${1:-}" | tr '[:upper:]' '[:lower:]')") ;;
+        --without-dlc=*) EXCLUDED_DLC+=("$(echo "${1#--without-dlc=}" | tr '[:upper:]' '[:lower:]')") ;;
         --delete-frames) DELETE_FRAMES=1 ;;
         --print-config) PRINT_CONFIG=1 ;;
         --isolation=*) ISOLATION="${1#--isolation=}" ;;
@@ -694,8 +708,11 @@ BACKUPS_TAKEN=1
 # Step 3: write minimal ModsConfig.xml
 # ---------------------------------------------------------------------------
 log "--- Step 3: writing minimal ModsConfig.xml ---"
+EXCLUDED_DLC_JSON="$(printf '%s\n' ${EXCLUDED_DLC[@]+"${EXCLUDED_DLC[@]}"} | python3 -c \
+    'import json,sys; print(json.dumps([l for l in sys.stdin.read().split("\n") if l]))')"
 RIMWORLD="$RIMWORLD" REQUIRED_MODS_JSON="$REQUIRED_MODS_JSON" \
     MOD_UT_IDS_JSON="$MOD_UT_IDS_JSON" MOD_UT_AFTER_HARNESS_JSON="$MOD_UT_AFTER_HARNESS_JSON" \
+    EXCLUDED_DLC_JSON="$EXCLUDED_DLC_JSON" \
 python3 - "$MODSCONFIG" <<'PYEOF'
 import json, os, re, sys
 
@@ -716,7 +733,14 @@ dlc_candidates = [
     ("Odyssey",  "ludeon.rimworld.odyssey"),
 ]
 data_dir = os.path.join(os.environ["RIMWORLD"], "Data")
-dlc_ids = [pid for (folder, pid) in dlc_candidates if os.path.isdir(os.path.join(data_dir, folder))]
+# --without-dlc deactivates an installed DLC rather than pretending it isn't on disk, because
+# ModsConfig is what ModsConfig.<Dlc>Active reads. Reported out loud below: a run that quietly
+# dropped an expansion would explain a scenario's every result wrongly.
+excluded = set(json.loads(os.environ.get("EXCLUDED_DLC_JSON", "[]")))
+dlc_ids = [pid for (folder, pid) in dlc_candidates
+           if os.path.isdir(os.path.join(data_dir, folder)) and pid not in excluded]
+for pid in sorted(excluded):
+    print(f"[run_test]   --without-dlc: {pid} left INACTIVE for this run")
 
 required = json.loads(os.environ.get("REQUIRED_MODS_JSON", "[]"))
 mods_under_test = json.loads(os.environ.get("MOD_UT_IDS_JSON", "[]"))
@@ -937,6 +961,11 @@ report = json.load(open(sys.argv[1]))
 
 def print_scenario(scenario, indent="  "):
     print(f"[run_test]{indent}scenario: {scenario.get('ScenarioName')}  pass={scenario.get('Pass')}")
+    # A skip keeps Pass=true so a box without the DLC a scenario needs stays green, which makes this
+    # line the only thing standing between "skipped" and a reader seeing pass=True over a scenario
+    # that verified nothing. See Shared/ScenarioReport.cs.
+    if scenario.get("Skipped"):
+        print(f"[run_test]{indent}  SKIPPED: {scenario.get('SkipReason')}")
     for check in scenario.get("ProbeChecks", []):
         status = "PASS" if check.get("Pass") else "FAIL"
         print(f"[run_test]{indent}  {check.get('ProbeName')}: {status} "
@@ -1001,6 +1030,12 @@ for err in report.get("Errors", []):
 failed = [s.get("ScenarioName") for s in scenarios if not s.get("Pass")]
 if failed:
     print(f"[run_test] failed scenario(s): {', '.join(str(name) for name in failed)}")
+# Repeated as a suite-level summary line, not only per scenario: a long suite's skips scroll away, and
+# "12 scenarios, all green" reads very differently once you know 12 of them skipped.
+skipped = [s.get("ScenarioName") for s in scenarios if s.get("Skipped")]
+if skipped:
+    print(f"[run_test] skipped {len(skipped)}/{len(scenarios)} scenario(s), which verified NOTHING: "
+          f"{', '.join(str(name) for name in skipped)}")
 # An empty Scenarios list must NOT pass — the mod's own gate (ReportComparer.AllPass(SuiteReport))
 # already refuses it, and this mirrors that rather than trusting the flag alone.
 sys.exit(0 if report.get("Pass") and scenarios else 1)

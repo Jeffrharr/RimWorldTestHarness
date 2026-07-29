@@ -270,7 +270,10 @@ public static class ScenarioDriver
             return;
         }
 
-        if (_stepIndex >= CurrentSpec.Steps.Count)
+        // A skipped scenario stops at the skipping step rather than running on: the steps after it
+        // were written expecting the world that step was supposed to build, so running them would
+        // pile up failures pointing anywhere but at "this install cannot run this scenario".
+        if (_stepIndex >= CurrentSpec.Steps.Count || CurrentReport.Skipped)
         {
             FinishScenario();
             return;
@@ -311,6 +314,15 @@ public static class ScenarioDriver
             // rest of its own scenario, let alone the scenarios after it. The error still fails this
             // scenario (ReportComparer.AllPass counts errors) and therefore the suite.
             CurrentReport.Errors.Add(outcome.Error);
+            return;
+        }
+
+        // Checked before anything else an outcome can carry: a skipping step ran nothing else, so
+        // treating its outcome as an ordinary one would be reading fields it never set.
+        if (outcome.SkipReason != null)
+        {
+            CurrentReport.Skipped = true;
+            CurrentReport.SkipReason = outcome.SkipReason;
             return;
         }
 
@@ -365,7 +377,12 @@ public static class ScenarioDriver
         // too, not only in the report — the log is what someone greps when a run "went green".
         string vision = VisionGate.Describe(report.VisionAsserts);
         string visionSuffix = vision.Length > 0 ? $" vision=[{vision}]" : "";
-        Log.Message($"RWTH: scenario finished: {report.ScenarioName} pass={report.Pass}{visionSuffix}");
+        // A skip prints as a skip, not as a pass. It is still Pass=true — that is what keeps a
+        // non-Odyssey box green — so the log line is the only place a reader skimming Player.log
+        // would otherwise see "pass=True" over a scenario that verified nothing.
+        string skipSuffix = report.Skipped ? $" SKIPPED: {report.SkipReason}" : "";
+        Log.Message(
+            $"RWTH: scenario finished: {report.ScenarioName} pass={report.Pass}{skipSuffix}{visionSuffix}");
 
         _scenarioIndex++;
         if (_scenarioIndex >= _specs.Count)
