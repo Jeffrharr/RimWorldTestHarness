@@ -654,6 +654,45 @@ public class ApiCompatibilityTests
     // screenshots and still passes, and a missing category/destroyable read would make the policy in
     // Shared/SceneClearing.cs classify every thing the same way.
 
+    // Snow is the one ground state a scenario cannot reach through gameplay levers — weather only
+    // starts flakes falling, and depth then accrues as a function of temperature and elapsed ticks.
+    // The SetSnow step writes the grid directly, so if either member below moves, the step silently
+    // becomes "photograph bare ground under a snow-titled scenario".
+    [Test]
+    public void Map_snowGrid_FieldExists()
+    {
+        var type = GetType(_game, "Verse.Map");
+        Assert.That(type, Is.Not.Null);
+        var field = type!.Fields.SingleOrDefault(f => f.Name == "snowGrid");
+        Assert.That(field, Is.Not.Null,
+            "Map.snowGrid no longer exists — the SetSnow step can't lay snow, and snowy scenes become unfilmable again");
+        Assert.That(field!.FieldType.FullName, Is.EqualTo("Verse.SnowGrid"),
+            "Map.snowGrid changed type — SceneBuilder.LaySnow would stop compiling");
+    }
+
+    // SetDepth rather than AddDepth: the step is declarative ("this rect is under 0.6 of snow"),
+    // and it relies on SetDepth's own clamping, category recompute and mesh dirtying.
+    [Test]
+    public void SnowGrid_SetDepthAndMaxDepth_Exist()
+    {
+        var type = GetType(_game, "Verse.SnowGrid");
+        Assert.That(type, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            Assert.That(
+                type!.Methods.SingleOrDefault(m =>
+                    m.Name == "SetDepth" && m.Parameters.Count == 2 &&
+                    m.Parameters[0].ParameterType.FullName == "Verse.IntVec3" &&
+                    m.Parameters[1].ParameterType.FullName == "System.Single"),
+                Is.Not.Null,
+                "SnowGrid.SetDepth(IntVec3, float) no longer exists — the SetSnow step can't work");
+            Assert.That(
+                type!.Fields.SingleOrDefault(f => f.Name == "MaxDepth"),
+                Is.Not.Null,
+                "SnowGrid.MaxDepth no longer exists — SetSnow's documented 0..1 depth range is no longer anchored to vanilla's own maximum");
+        });
+    }
+
     [Test]
     public void Map_roofGrid_FieldExists()
     {

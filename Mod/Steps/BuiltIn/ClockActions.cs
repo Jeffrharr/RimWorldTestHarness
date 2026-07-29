@@ -48,6 +48,30 @@ public sealed class SetTimeAction : IStepAction
     }
 }
 
+// The game-touching half of AdvanceTime. See Shared/Steps/BuiltIn/ClockSteps.cs for why this exists
+// alongside SetTime.
+//
+// DebugSetTicksGame, the same lever SetTime pulls, so this is a clock JUMP and not simulation — no
+// ticks are run and the world does not live through the skipped hours. The difference is only that
+// the destination is computed from where the clock already is, which is what makes a sequence of
+// these monotonic.
+public sealed class AdvanceTimeAction : IStepAction
+{
+    public string Type => StepArgs.AdvanceTimeType;
+
+    public StepOutcome Execute(IReadOnlyDictionary<string, string> args, StepContext ctx)
+    {
+        float hours = float.Parse(args[StepArgs.AdvanceTimeHours]);
+
+        // Rounded, not truncated: a 0.25-hour step is 625 ticks exactly, but 0.1 is 250.0000...
+        // in float and truncation would shave a tick off every frame, drifting a long sweep.
+        int ticks = (int)System.Math.Round(hours * GenDate.TicksPerHour);
+        Find.TickManager.DebugSetTicksGame(Find.TickManager.TicksGame + ticks);
+
+        return new StepOutcome();
+    }
+}
+
 public sealed class FastForwardAction : IStepAction
 {
     public string Type => StepArgs.FastForwardType;

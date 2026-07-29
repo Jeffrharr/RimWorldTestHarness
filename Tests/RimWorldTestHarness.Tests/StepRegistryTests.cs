@@ -22,11 +22,13 @@ public class StepRegistryTests
         string[] expected =
         {
             StepArgs.SetTileType, StepArgs.SetSeasonType, StepArgs.SetTimeType,
+            StepArgs.AdvanceTimeType,
             StepArgs.FastForwardType, StepArgs.WaitType, StepArgs.ProbeType,
             StepArgs.ScreenshotType, StepArgs.SetFeatureType, StepArgs.StartConditionType,
             StepArgs.PlaceThingsType, StepArgs.SetTerrainType, StepArgs.SetRoofType,
             StepArgs.LookAtType,
-            StepArgs.SpawnPawnType, StepArgs.TimelapseType, "SetWeather", "SetBiome", "Assert",
+            StepArgs.SpawnPawnType, StepArgs.TimelapseType, "SetWeather", "SetBiome", "SetSnow",
+            "Assert",
             LandInOrbitStep.StepType,
         };
 
@@ -49,6 +51,9 @@ public class StepRegistryTests
         string[] expected =
         {
             StepArgs.SetTileType, StepArgs.SetSeasonType, StepArgs.SetTimeType,
+            // AdvanceTime joins its absolute sibling: it moves the clock and touches nothing else,
+            // so it is as safe against a real colony as SetTime is.
+            StepArgs.AdvanceTimeType,
             StepArgs.FastForwardType, StepArgs.ProbeType, StepArgs.ScreenshotType,
             StepArgs.SetFeatureType,
         };

@@ -57,8 +57,10 @@ public class ScenarioSpecLoaderTests
 
         Assert.That(spec.LoadErrors, Is.Empty);
         Assert.That(spec.Steps.Any(s => s.Type == "Timelapse"), Is.False);
+        // One absolute jump to open the sweep, then relative advances — see AdvanceTimeStep for why
+        // a sequence of absolute SetTimes was wrong.
         Assert.That(spec.Steps.Select(s => s.Type),
-            Is.EqualTo(new[] { "SetTime", "Screenshot", "SetTime", "Screenshot", "SetTime", "Screenshot" }));
+            Is.EqualTo(new[] { "SetTime", "Screenshot", "AdvanceTime", "Screenshot", "AdvanceTime", "Screenshot" }));
         Assert.That(spec.Steps[1].Args["fileName"], Is.EqualTo("dc_0000.png"));
     }
 

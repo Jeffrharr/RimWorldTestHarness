@@ -4,6 +4,7 @@ using System.Linq;
 using LudeonTK;
 using RimWorld;
 using RimWorldTestHarness.Shared;
+using RimWorldTestHarness.Shared.Steps.BuiltIn;
 using Verse;
 
 namespace RimWorldTestHarness.Mod;
@@ -436,6 +437,47 @@ public static class SceneBuilder
         // Partly clipped is reported, not failed — same call as SetTerrain's.
         if (outOfBounds > 0)
             Log.Message($"RWTH: SetRoof covered {painted} cells, {outOfBounds} were out of bounds");
+
+        return null;
+    }
+
+    // ----- SetSnow ------------------------------------------------------------------------------
+
+    // Writes snow depth straight into the grid, bypassing accumulation entirely. See
+    // Shared/Steps/BuiltIn/SetSnowStep.cs for why a scenario cannot get here through weather.
+    //
+    // SnowGrid.SetDepth already clamps to [0, MaxDepth], recomputes the cell's WeatherBuildupCategory
+    // and dirties the map mesh for that cell, so there is no separate redraw to trigger — unlike the
+    // baked-mesh cases (roof, terrain) this one maintains itself.
+    public static string? LaySnow(Map map, SnowPlan plan)
+    {
+        IntVec3 anchor = ResolveAnchor(plan, map);
+        CellRect rect = CellRect.CenteredOn(anchor, plan.Width, plan.Height);
+        float depth = (float)plan.Depth;
+
+        int laid = 0;
+        int outOfBounds = 0;
+
+        foreach (IntVec3 cell in rect)
+        {
+            if (cell.InBounds(map))
+            {
+                map.snowGrid.SetDepth(cell, depth);
+                laid++;
+            }
+            else
+            {
+                outOfBounds++;
+            }
+        }
+
+        if (laid == 0)
+            return $"laid no snow — the {plan.Width}x{plan.Height} rect at ({anchor.x},{anchor.z}) " +
+                   "lies entirely outside the map";
+
+        // Partly clipped is reported, not failed — same call as SetTerrain's and SetRoof's.
+        if (outOfBounds > 0)
+            Log.Message($"RWTH: SetSnow covered {laid} cells, {outOfBounds} were out of bounds");
 
         return null;
     }

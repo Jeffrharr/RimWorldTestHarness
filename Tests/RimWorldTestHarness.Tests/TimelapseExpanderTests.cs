@@ -23,6 +23,19 @@ public class TimelapseExpanderTests
         return StepExpansion.ExpandAll(new[] { step }, errors);
     }
 
+    // A sweep is one absolute SetTime followed by relative AdvanceTimes, so "what times does this
+    // visit" is read as a start plus a list of steps rather than a list of hours.
+    private static string StartHour(List<ScenarioStep> steps) =>
+        steps.First(s => s.Type == StepArgs.SetTimeType).Args[StepArgs.SetTimeHour];
+
+    private static List<string> Advances(List<ScenarioStep> steps) =>
+        steps.Where(s => s.Type == StepArgs.AdvanceTimeType)
+             .Select(s => s.Args[StepArgs.AdvanceTimeHours])
+             .ToList();
+
+    private static int FrameCount(List<ScenarioStep> steps) =>
+        steps.Count(s => s.Type == StepArgs.ScreenshotType);
+
     // --- happy path ---
 
     [Test]
@@ -43,21 +56,18 @@ public class TimelapseExpanderTests
     {
         var steps = Expand(Timelapse(("fromHour", "6"), ("toHour", "18"), ("stepHours", "6")), out _);
 
-        var hours = steps.Where(s => s.Type == StepArgs.SetTimeType)
-                         .Select(s => s.Args[StepArgs.SetTimeHour])
-                         .ToList();
-        Assert.That(hours, Is.EqualTo(new[] { "6", "12" }));
+        // 6 and 12, expressed as "start at 6, then advance 6" — 18 is excluded.
+        Assert.That(StartHour(steps), Is.EqualTo("6"));
+        Assert.That(Advances(steps), Is.EqualTo(new[] { "6" }));
     }
 
     [Test]
-    public void Expand_FractionalStep_ComputesHoursFromIndexWithoutDrift()
+    public void Expand_FractionalStep_EmitsOneAbsoluteJumpThenEqualAdvances()
     {
         var steps = Expand(Timelapse(("fromHour", "0"), ("toHour", "1"), ("stepHours", "0.25")), out _);
 
-        var hours = steps.Where(s => s.Type == StepArgs.SetTimeType)
-                         .Select(s => s.Args[StepArgs.SetTimeHour])
-                         .ToList();
-        Assert.That(hours, Is.EqualTo(new[] { "0", "0.25", "0.5", "0.75" }));
+        Assert.That(StartHour(steps), Is.EqualTo("0"));
+        Assert.That(Advances(steps), Is.EqualTo(new[] { "0.25", "0.25", "0.25" }));
     }
 
     [Test]
@@ -125,13 +135,120 @@ public class TimelapseExpanderTests
         Assert.That(steps[0].Type, Is.EqualTo(StepArgs.TimelapseType));
     }
 
-    [Test]
-    public void Expand_MidnightCrossingRange_IsRejectedWithGuidance()
-    {
-        var steps = Expand(Timelapse(("fromHour", "18"), ("toHour", "6")), out var errors);
+    // --- wrapping past midnight ---
 
-        Assert.That(errors[0], Does.Contain("use two Timelapse steps"));
+    [Test]
+    public void Expand_MidnightCrossingRange_WrapsInsteadOfBeingRejected()
+    {
+        var steps = Expand(Timelapse(("fromHour", "22"), ("toHour", "2"), ("stepHours", "1")), out var errors);
+
+        Assert.That(errors, Is.Empty);
+        // Four hours of span (22->24 plus 0->2), half-open. Crucially the frames past midnight are
+        // ADVANCES, not absolute jumps back into the same day — that is what keeps the moon moving
+        // forwards across the wrap instead of leaping a day backwards.
+        Assert.That(StartHour(steps), Is.EqualTo("22"));
+        Assert.That(Advances(steps), Is.EqualTo(new[] { "1", "1", "1" }));
+        Assert.That(steps.Any(s => s.Type == StepArgs.SetTimeType && s.Args[StepArgs.SetTimeHour] == "0"),
+                    Is.False, "a wrapped frame must never be an absolute jump to hour 0");
+    }
+
+    [Test]
+    public void Expand_MidnightCrossingRange_IsOneContinuousFrameSequence()
+    {
+        // The point of wrapping rather than splitting: one prefix, one unbroken numbering, so the
+        // stitched video has no cut at midnight.
+        var steps = Expand(Timelapse(("fromHour", "23"), ("toHour", "1"), ("stepHours", "0.5"),
+                                     ("fileNamePrefix", "moonrise")), out var errors);
+
+        Assert.That(errors, Is.Empty);
+        var names = steps.Where(s => s.Type == StepArgs.ScreenshotType)
+                         .Select(s => s.Args[StepArgs.ScreenshotFileName])
+                         .ToList();
+        Assert.That(names, Is.EqualTo(new[]
+        {
+            "moonrise_0000.png", "moonrise_0001.png", "moonrise_0002.png", "moonrise_0003.png",
+        }));
+    }
+
+    [Test]
+    public void Expand_MidnightCrossingRange_CountsWrappedSpanAgainstFrameCap()
+    {
+        // A wrapping span must be measured the long way round (23->22 is 23 hours, not -1), or the
+        // cap check would see a negative count and wave through a sweep it should reject.
+        var steps = Expand(Timelapse(("fromHour", "23"), ("toHour", "22"), ("stepHours", "0.04")), out var errors);
+
+        Assert.That(errors, Has.Count.EqualTo(1));
+        Assert.That(errors[0], Does.Contain($"{TimelapseExpander.MaxFrames}-frame cap"));
+    }
+
+    [Test]
+    public void Expand_EqualFromAndToHour_IsRejectedAndPointsAtSteps()
+    {
+        var steps = Expand(Timelapse(("fromHour", "6"), ("toHour", "6")), out var errors);
+
+        Assert.That(errors, Has.Count.EqualTo(1));
+        Assert.That(errors[0], Does.Contain(TimelapseExpander.StepsArg));
         Assert.That(steps[0].Type, Is.EqualTo(StepArgs.TimelapseType));
+    }
+
+    // --- explicit step count ---
+
+    [Test]
+    public void Expand_StepsFromNoon_ProducesAFullDayThatLoopsSeamlessly()
+    {
+        // The sweep a looping video wants: 24 hours starting at noon, so the loop's seam lands
+        // where shadows are shortest rather than where they are longest and most directional.
+        var steps = Expand(Timelapse(("fromHour", "12"), ("stepHours", "0.25"), ("steps", "96")),
+                           out var errors);
+
+        Assert.That(errors, Is.Empty);
+        Assert.That(FrameCount(steps), Is.EqualTo(96));
+        Assert.That(StartHour(steps), Is.EqualTo("12"));
+        // 95 advances of a quarter hour after the opening jump: 24 hours exactly, stopping one step
+        // short of noon so no frame is duplicated across the loop.
+        Assert.That(Advances(steps), Has.Count.EqualTo(95));
+        Assert.That(Advances(steps).Distinct(), Is.EqualTo(new[] { "0.25" }));
+    }
+
+    [Test]
+    public void Expand_Steps_IgnoresTheDefaultEndHourEntirely()
+    {
+        // stepHours * steps runs well past the default toHour of 24; the count wins.
+        var steps = Expand(Timelapse(("fromHour", "20"), ("stepHours", "1"), ("steps", "10")),
+                           out var errors);
+
+        Assert.That(errors, Is.Empty);
+        Assert.That(FrameCount(steps), Is.EqualTo(10));
+        Assert.That(StartHour(steps), Is.EqualTo("20"));
+        Assert.That(Advances(steps), Has.Count.EqualTo(9));
+    }
+
+    [Test]
+    public void Expand_StepsAndToHourTogether_IsRejected()
+    {
+        var steps = Expand(Timelapse(("fromHour", "12"), ("toHour", "18"), ("steps", "10")), out var errors);
+
+        Assert.That(errors, Has.Count.EqualTo(1));
+        Assert.That(errors[0], Does.Contain("both bound the sweep"));
+        Assert.That(steps[0].Type, Is.EqualTo(StepArgs.TimelapseType));
+    }
+
+    [Test]
+    public void Expand_StepsOverTheCap_IsRejected()
+    {
+        var steps = Expand(Timelapse(("steps", (TimelapseExpander.MaxFrames + 1).ToString())), out var errors);
+
+        Assert.That(errors, Has.Count.EqualTo(1));
+        Assert.That(errors[0], Does.Contain($"{TimelapseExpander.MaxFrames}-frame cap"));
+    }
+
+    [Test]
+    public void Expand_NegativeSteps_IsRejected()
+    {
+        var steps = Expand(Timelapse(("steps", "-4")), out var errors);
+
+        Assert.That(errors, Has.Count.EqualTo(1));
+        Assert.That(errors[0], Does.Contain("must not be negative"));
     }
 
     // A typo'd key must not silently fall back to a default — that would produce a plausible but
