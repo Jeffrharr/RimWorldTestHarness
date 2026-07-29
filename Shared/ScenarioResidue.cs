@@ -63,8 +63,17 @@ public enum ScenarioResidue
     // RimWorld caches parts of that. See Shared/Steps/BuiltIn/SetBiomeStep.cs.
     Biome = 1 << 9,
 
+    // A whole additional Map was generated and the game switched to it (LandInOrbit). Listed apart
+    // from Map, which describes edits to the map a scenario was handed: this is a different map
+    // entirely, on a different PlanetLayer, with the fixture's own colony left untouched underneath
+    // it. Reload-only for the obvious reason — nothing un-generates a map — but the dangerous half is
+    // the switch rather than the generation: a following scenario that believed itself isolated would
+    // open on the orbital platform and measure the wrong world while every step in it reported
+    // success.
+    NewMap = 1 << 10,
+
     All = Clock | Latitude | FeatureFlags | TimeSpeed | Camera | ScreenshotMode | Map |
-          GameConditions | Weather | Biome,
+          GameConditions | Weather | Biome | NewMap,
 }
 
 // Pure classification of a step list's residue. Kept in Shared with no game types so the whole
@@ -118,6 +127,7 @@ public static class ScenarioResidueAnalyzer
             return "nothing";
 
         List<string> parts = new List<string>();
+        AddIfSet(parts, residue, ScenarioResidue.NewMap, "a new current map");
         AddIfSet(parts, residue, ScenarioResidue.Map, "map");
         AddIfSet(parts, residue, ScenarioResidue.GameConditions, "game conditions");
         AddIfSet(parts, residue, ScenarioResidue.Weather, "weather");
