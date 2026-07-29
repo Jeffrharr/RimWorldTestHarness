@@ -99,7 +99,7 @@ public class ScenarioResidueTests
             // not something that slips in unnoticed.
             Assert.That(ScenarioResidueAnalyzer.RequiresReload,
                 Is.EqualTo(ScenarioResidue.Map | ScenarioResidue.GameConditions
-                    | ScenarioResidue.Weather | ScenarioResidue.Biome));
+                    | ScenarioResidue.Weather | ScenarioResidue.Biome | ScenarioResidue.NewMap));
         });
     }
 
