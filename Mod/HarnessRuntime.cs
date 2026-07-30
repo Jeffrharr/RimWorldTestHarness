@@ -24,5 +24,38 @@ public static class HarnessRuntime
     // Overrides the latitude every WorldGrid.LongLatOf caller sees. Null = no override (real tile
     // latitude). Set by a SetTile action; longitude is intentionally left real (see
     // Patch_ForcedLatitude).
-    public static float? ForcedLatitude { get; set; }
+    //
+    // Hand-written rather than auto-implemented so a change can fire WorldOverrideHookRegistry: a mod
+    // under test may cache something derived from latitude, and because SetTile overrides the reading
+    // rather than moving the colony, a per-TILE cache has no other way to learn its answer just went
+    // stale. See WorldOverrideHookRegistry for the case that motivated it.
+    public static float? ForcedLatitude
+    {
+        get => forcedLatitude;
+        set
+        {
+            // Only fire on an actual change. WorldStateReset nulls this between every scenario in a
+            // suite, including the many that never set it, so firing on a no-op write would scale the
+            // hook's cost with scenario count rather than with latitude changes.
+            if (NullableFloatEquals(forcedLatitude, value))
+                return;
+
+            forcedLatitude = value;
+            Shared.WorldOverrideHookRegistry.FireAll();
+        }
+    }
+
+    private static float? forcedLatitude;
+
+    // Named rather than inlined into the setter's condition: nullable-float equality has three cases
+    // (both null, one null, both present) and spelling them out inside an `if` is the kind of thing a
+    // reader has to hold in their head while checking the setter does what its comment claims.
+    private static bool NullableFloatEquals(float? a, float? b)
+    {
+        if (!a.HasValue && !b.HasValue)
+            return true;
+        if (!a.HasValue || !b.HasValue)
+            return false;
+        return a.Value.Equals(b.Value);
+    }
 }

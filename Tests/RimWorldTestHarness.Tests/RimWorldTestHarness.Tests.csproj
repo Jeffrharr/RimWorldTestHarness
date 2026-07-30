@@ -25,4 +25,13 @@
     <ProjectReference Include="../../Shared/Shared.csproj" />
   </ItemGroup>
 
+  <!-- HarnessRuntime lives in Mod/ but takes no Verse dependency of its own, and its ForcedLatitude
+       setter carries the fire-on-change logic deciding whether a mod's cache gets flushed. Linked
+       rather than copied so these tests compile the exact file that ships, per the same argument
+       CelestialLighting's Formulas.cs makes. A ProjectReference to Mod.csproj would instead drag the
+       whole game-coupled assembly in and cost these tests their offline-ness. -->
+  <ItemGroup>
+    <Compile Include="../../Mod/HarnessRuntime.cs" Link="Linked/HarnessRuntime.cs" />
+  </ItemGroup>
+
 </Project>

@@ -35,6 +35,12 @@ public static class HarnessMod
     {
         new Harmony("joof.rimworldtestharness").PatchAll();
 
+        // The one line that would otherwise force WorldOverrideHookRegistry to reference Verse and so
+        // cost it the offline testability it sits in Shared to get. Wired here rather than lazily so a
+        // throwing hook is never silently dropped in a real run; in tests the sink stays null and the
+        // throw is swallowed, which is the documented behaviour.
+        Shared.WorldOverrideHookRegistry.ErrorSink = message => Log.Warning($"[RWTH] {message}");
+
         // Before anything can load a scenario: the loader validates step types against the registry,
         // so discovery has to have run or every step in every scenario reads as an unknown type.
         Steps.StepDiscovery.RunOnce();
