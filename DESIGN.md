@@ -516,9 +516,74 @@ isolated while writing to the user's real config. So the mechanism is first-part
 than hoping. It stays off by default because a fresh save-data root is itself an unvalidated behaviour
 change (no `Screenshots/`, empty `Saves/`, only the `Config/` we seed).
 
-Per-run bind mounts of `RimWorld/Mods` (`bwrap` is available) are deliberately not attempted:
-`setup_symlink` is idempotent and only removes links it created, which is enough while runs can't
-overlap.
+Per-run bind mounts of `RimWorld/Mods` (`bwrap` is available) are deliberately not attempted: claimed
+symlinks (below) record and restore exactly what was there, which is enough while runs can't overlap.
+
+## The lock has to cover the assets, not just the run
+
+The run guard above serialises *runs*. It does not, on its own, serialise the thing agents actually
+collide over — **which build is installed at the path the game resolves to**.
+
+`RimWorld/Mods/<Mod>` is a permanent symlink to a mod's main checkout, and the runner will not
+repoint it at a git worktree just because one was named (two folders sharing a `packageId` is its own
+problem). So live-testing a branch meant copying the branch's `1.6/Assemblies` over the main
+checkout's, running, and copying back — all of it *outside* the lock. Three failures came out of that,
+and each one produced a confident wrong answer rather than an error:
+
+1. **A run measuring someone else's build.** Agent A installs its DLL, then blocks on the lock B
+   holds; B's game boots against A's assembly. B reported a full A/B frame set as proof of a fix that
+   was never loaded. Checking the lock is free before installing does not help — the other run can
+   take it in the seconds between the check and the launch.
+2. **A crashed run's leftovers inherited silently.** Teardown never ran, so the branch DLL and a
+   `Mods/TestMod` pointing at a since-merged worktree survived into the next run. Every worktree's
+   probe bridge shares one basename and `packageId`, and the old `setup_symlink` deliberately left an
+   existing link alone — so the stale one won. The tell was a *selective* missing probe (only ones
+   newer than that branch), which reads like a bug in the mod's own registration code.
+3. **The config swap compounding.** A run that died mid-load left `ModsConfig.xml` replaced by the
+   14-mod test list. Every later run then dutifully backed up *that*, so the user's real 828-mod list
+   survived only in one old `/tmp/rwth-run-*/` that looked like any other stale temp dir. It sat that
+   way for hours, with every run in between passing.
+
+None of these is fixable by asking callers to be more careful; they are all the same shape, which is
+**a mutation nobody wrote down**. So the runner now installs the build itself, under the lock
+(`--mod-overlay <worktree>`, or `--install <src>:<dst>` with both paths spelled out), and every global
+mutation becomes a **claim** recorded in `Runner/asset_claims.py`'s ledger before it happens.
+
+A claim states the prior state explicitly — absent, file, or symlink-to-X — plus a hash of what the
+run installed. That explicitness is worth more than the backup: the old code inferred "no prior file
+existed" from "no backup was taken", so a run that failed before backing up reached teardown and
+*deleted the user's real save*. Teardown is now one rollback of the ledger, newest claim first.
+
+The ledger lives at a fixed path (`/tmp/rwth-claims-<uid>.json`) and exists only while a run holds
+something. Because it is read *under the lock*, a ledger that is present can only mean one thing: a
+previous run died before cleaning up. The next run rolls it back before taking any claims of its own —
+which is what stops failure 3 from compounding.
+
+**Recovery is hash-guarded, and that is what makes it safe to do automatically.** Restoring another
+run's backup means restoring something possibly hours old, so each item is rolled back only if it
+still hashes to exactly what that run installed. Anything edited since is left alone and reported with
+the path to its backup. A wrong automatic restore is worse than a loud manual one — and the common
+case (nobody else even knew the file had been swapped) repairs itself silently.
+
+The guard is deliberately *not* applied to a run's own teardown: RimWorld rewrites the whole of
+`Prefs.xml` from memory on exit, so a guarded teardown would refuse to undo the `<devMode>` seed every
+single time. A run owns what it recorded; the guard is for undoing a run that is no longer around to
+vouch for itself.
+
+Two consequences worth stating, because both were learned the hard way:
+
+- **Overlays are directory-granular**, never per-file. Copying just the `.dll` leaves a `.pdb` that no
+  longer matches it; Mono faults during assembly load and RimWorld dies with `signo:11` immediately
+  after `RWTH: harness loaded`, with the only clue one `Symbol file ... doesn't match image ...` line
+  in `Player.log`. It reads as a crash in the mod's own patch code. A whole-directory overlay cannot
+  produce a mismatched pair.
+- **A type-load failure is now fatal to the run.** A probe bridge built against a different tree than
+  the installed DLL throws `ReflectionTypeLoadException` at load; every probe and feature it registers
+  silently vanishes, while `Screenshot` steps carry on working. The run yields a full set of plausible
+  frames and can even come out green. Since Step 3 writes a minimal modlist, any such exception is
+  necessarily ours, so the runner greps `Player.log` for it and fails rather than reporting a result
+  that means nothing. `Runner/asset_claims.py` is covered by `Tests/runner/test_asset_claims.py` —
+  offline, no game, no lock, ~30 cases pinning each failure above.
 
 ## Timelapse: video as a clock sweep, not a screen recording
 

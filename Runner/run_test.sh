@@ -7,9 +7,13 @@
 # load"). One scenario on the command line behaves exactly as it always has, report shape included.
 #
 # What this does:
-#   1. Symlinks RimWorldTestHarness and every --mod folder into RimWorld's Mods folder if not
-#      already present (a mod under test is often already symlinked as a real active mod — this
-#      script never removes a symlink it didn't create).
+#   0. Rolls back any claim ledger a previous run abandoned (see "Asset claims" below), then opens
+#      one of its own. Every global mutation from here on is recorded in it before it happens.
+#   1. Claims a symlink under RimWorld's Mods folder for RimWorldTestHarness and every --mod folder:
+#      records whatever was there, points it at the folder this run was given, and puts the previous
+#      state back on teardown. A link left behind by another branch's crashed run is REPOINTED, not
+#      obeyed — every worktree's probe mod shares one basename, so obeying it silently ran the wrong
+#      branch's probes.
 #   2. Backs up the real ModsConfig.xml, Prefs.xml, and any existing Saves/autostart.rws, then seeds
 #      <devMode>True</devMode> into Prefs.xml — vanilla's autostart check is gated on it and runs
 #      before any mod assembly loads, so it cannot be forced from inside the game (see seed_devmode).
@@ -22,6 +26,8 @@
 #      autostart mechanism (Root_Entry.Start -> SaveGameFilesUtility.GetAutostartSaveFile, gated
 #      on Prefs.DevMode which Patch_ForceDevMode forces true while a scenario is active) loads it
 #      with no custom load-driving code needed. See DESIGN.md.
+#   4b. Installs any --install / --mod-overlay build output over its destination, under the lock,
+#      recording each file so teardown puts the previous build back byte-for-byte.
 #   5. Launches RimWorldLinux with RWTH_SCENARIO (single) or RWTH_SUITE (suite) plus RWTH_REPORT,
 #      GPU-rendering (no -batchmode/-nographics — Screenshot steps need a real rendered frame),
 #      reusing MissileGirl/TestMods/run_test.sh's --no-sandbox + retry-on-early-crash shape.
@@ -30,8 +36,8 @@
 #      only if Pass == true (for a suite: only if every scenario passed and there were no
 #      suite-level errors).
 #   8. Stitches any Timelapse frame sequences into videos.
-#   9. Restores ModsConfig.xml + Saves/autostart.rws from backup and removes any symlinks this
-#      run created (unless --no-teardown).
+#   9. Rolls the whole ledger back — config, save, symlinks, installed assemblies — and deletes it
+#      (unless --no-teardown).
 #
 # Usage:
 #   ./run_test.sh <scenario.json> [flags]                  # single scenario (unchanged behaviour)
@@ -45,6 +51,16 @@
 #                          the scenarios exercise. Repeatable, and optional: this repo's own
 #                          Scenarios/ use only vanilla defs and need no --mod at all. Pass a mod and
 #                          its probe-bridge folder in the order you want them loaded.
+#   --mod-overlay <folder> install <folder>/1.6/Assemblies over the assemblies of the ALREADY
+#                          INSTALLED mod with the same packageId, for the duration of the run. This
+#                          is how you live-test a git worktree: Mods/<Mod> is a permanent symlink to
+#                          the main checkout, so naming a worktree with --mod does not change which
+#                          DLL the game loads. Repeatable. Do NOT also pass the worktree as --mod —
+#                          that gives two mod folders sharing one packageId.
+#   --install <src>:<dst>  lower-level form of the same thing: overlay directory <src> onto directory
+#                          <dst> for the run, then restore <dst> exactly. Repeatable. Neither path
+#                          may contain ':'.
+#   --recover-only         roll back an abandoned ledger, report, and exit without running anything.
 #   --no-teardown          leave symlinks/ModsConfig/autostart.rws in place afterwards
 #   --delete-frames        delete timelapse PNGs once stitched
 #   --isolation=POLICY     auto (default) | always | never — how hard a suite works to isolate one
@@ -70,6 +86,16 @@
 #     an exclusive flock so two runs cannot overlap. See "Run guard" below.
 #   - Everything mutable this run owns (backups, Player.log, stderr) lives under one per-run scratch
 #     directory, so overlapping runs cannot restore each other's backup over the real config.
+#   - Asset claims: the lock stops two runs overlapping, but it never covered the assets a caller
+#     swapped in *around* the run — chiefly the branch build copied over the main checkout's
+#     1.6/Assemblies so the Mods/ symlink would resolve to it. That copy sat outside the lock, so a
+#     run could boot against another agent's assembly and report the resulting frames as its own; and
+#     a run that died left the branch DLL and a stale Mods/TestMod behind for the next one to load
+#     silently. --install/--mod-overlay move the copy inside the lock, and Runner/asset_claims.py
+#     records every swap (config, save, symlinks, assemblies) in a ledger at $RWTH_LEDGER_FILE so
+#     teardown is exact and a crashed run's leftovers are rolled back by the next run rather than
+#     inherited. Recovery is hash-guarded: anything edited since it was installed is reported, not
+#     overwritten. `asset_claims.py --ledger <path> status` says what is currently claimed.
 #   - This still relaunches RimWorldLinux and temporarily swaps the real
 #     ModsConfig.xml/Saves/autostart.rws (both backed up and restored) unless RWTH_ISOLATE_SAVEDATA=1
 #     — same blast radius as MissileGirl/TestMods/run_test.sh.
@@ -114,7 +140,6 @@ fi
 # -logfile (already passed at launch) is what makes this a one-line change.
 PLAYER_LOG="$RUN_TMP_DIR/Player.log"
 MODSCONFIG="$CONFIG_DIR/Config/ModsConfig.xml"
-MODSCONFIG_BAK="$RUN_TMP_DIR/ModsConfig.bak.xml"
 
 # Prefs.xml is swapped for exactly one reason: <devMode>. Vanilla's autostart-save mechanism is gated
 # on Prefs.DevMode (Verse.SaveGameFilesUtility.GetAutostartSaveFile returns null when it's false), so
@@ -129,15 +154,26 @@ MODSCONFIG_BAK="$RUN_TMP_DIR/ModsConfig.bak.xml"
 # Runs only ever worked because the user's ambient devMode happened to be true. Seeding it here is what
 # makes the mechanism actually hold; the patch stays for DevMode reads later in the boot.
 PREFS="$CONFIG_DIR/Config/Prefs.xml"
-PREFS_BAK="$RUN_TMP_DIR/Prefs.bak.xml"
 
 SAVES_DIR="$CONFIG_DIR/Saves"
 AUTOSTART_SAVE="$SAVES_DIR/autostart.rws"
-AUTOSTART_BAK="$RUN_TMP_DIR/autostart.bak.rws"
 RIMWORLD_STDERR="$RUN_TMP_DIR/rimworld_stderr.log"
+
+# Where the claim ledger's backups live. Per-run like everything else mutable, so a ledger abandoned
+# by a dead run still points at its own copies and a later run's claims cannot overwrite them.
+CLAIM_BACKUP_DIR="$RUN_TMP_DIR/claims"
 
 # Deliberately NOT per-run: the point of the lock is that every run contends for the same file.
 LOCK_FILE="${RWTH_LOCK_FILE:-${TMPDIR:-/tmp}/rwth-run-$(id -u).lock}"
+
+# Also deliberately NOT per-run, and for the same reason: the ledger records what is currently
+# swapped in on this machine, so the next run has to find it at a path it can predict without knowing
+# who wrote it. It exists only while a run holds something — created after the lock is taken, deleted
+# once teardown has rolled everything back. A ledger present while we hold the lock therefore means
+# exactly one thing: a previous run died without cleaning up. (Only "exactly one thing" because we
+# read it under the lock. A run started with a different RWTH_LOCK_FILE but the same ledger path
+# breaks that inference — don't override one without the other.)
+LEDGER_FILE="${RWTH_LEDGER_FILE:-${TMPDIR:-/tmp}/rwth-claims-$(id -u).json}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"                       # RimWorldTestHarness/
@@ -159,6 +195,18 @@ NO_TEARDOWN=0
 DELETE_FRAMES=0
 ISOLATION="auto"
 PRINT_CONFIG=0
+RECOVER_ONLY=0
+
+# Build outputs to install over an existing installation for the life of the run, as "src:dest"
+# directory pairs. --mod-overlay resolves to entries here once packageIds are known (see
+# resolve_mod_overlays); --install is the same thing with both paths spelled out.
+#
+# Directory pairs rather than file pairs on purpose. The concrete case is a mod's 1.6/Assemblies, and
+# copying only the .dll out of one leaves a mismatched .pdb behind — Mono loads the symbol file during
+# assembly load and faults, so RimWorld dies with signo:11 straight after "RWTH: harness loaded" and
+# it reads as a crash in the mod's own patch code. A whole-directory overlay cannot produce that pair.
+INSTALL_PAIRS=()
+MOD_OVERLAY_DIRS=()
 
 # Mod folders to activate alongside the harness — the mods whose probes/features the scenarios
 # exercise. Repeatable, and legitimately empty: the harness's own scenarios under Scenarios/ use
@@ -181,7 +229,8 @@ usage() {
     echo "[run_test] usage: run_test.sh <scenario.json> [more.json ...] [--suite <list.txt>]" >&2
     echo "[run_test]        [--mod <mod-folder>]... [--no-teardown] [--delete-frames]" >&2
     echo "[run_test]        [--isolation=auto|always|never] [--without-dlc <packageId>]..." >&2
-    echo "[run_test]        [--print-config]" >&2
+    echo "[run_test]        [--mod-overlay <worktree>]... [--install <src-dir>:<dest-dir>]..." >&2
+    echo "[run_test]        [--print-config] [--recover-only]" >&2
     exit 2
 }
 
@@ -198,6 +247,11 @@ while (( $# )); do
         --suite=*) SUITE_LIST_IN="${1#--suite=}" ;;
         --mod) shift; MODS_UNDER_TEST+=("${1:-}") ;;
         --mod=*) MODS_UNDER_TEST+=("${1#--mod=}") ;;
+        --mod-overlay) shift; MOD_OVERLAY_DIRS+=("${1:-}") ;;
+        --mod-overlay=*) MOD_OVERLAY_DIRS+=("${1#--mod-overlay=}") ;;
+        --install) shift; INSTALL_PAIRS+=("${1:-}") ;;
+        --install=*) INSTALL_PAIRS+=("${1#--install=}") ;;
+        --recover-only) RECOVER_ONLY=1 ;;
         -*) echo "[run_test] unknown flag: $1" >&2; usage ;;
         *) SCENARIOS+=("$1") ;;
     esac
@@ -224,6 +278,111 @@ for mod_arg in ${MODS_UNDER_TEST[@]+"${MODS_UNDER_TEST[@]}"}; do
     MOD_UT_LINKS+=("$(basename "$mod_dir")")
 done
 
+# ---------------------------------------------------------------------------
+# --mod-overlay resolution
+# ---------------------------------------------------------------------------
+# Reads one mod folder's packageId. The batch reader further down does more (it also works out which
+# mods must load after the harness), but overlay resolution has to happen up here so a bad
+# --mod-overlay fails before the run takes the lock rather than after — and so --print-config can
+# show what would be installed where.
+read_package_id() {
+    python3 - "$1" <<'PYEOF'
+import re, sys
+with open(f"{sys.argv[1]}/About/About.xml", encoding="utf-8") as f:
+    m = re.search(r"<packageId>(.*?)</packageId>", f.read(), re.S | re.I)
+if not m:
+    sys.exit(f"no <packageId> in {sys.argv[1]}/About/About.xml")
+print(m.group(1).strip().lower())
+PYEOF
+}
+
+# Find the mod folder the game will actually load for a packageId — the one an overlay has to land
+# on. Checked in two places, in this order:
+#   1. the --mod folders, because a run that names a mod is telling us which copy it means;
+#   2. the Mods/ folder, for the (normal) case where the mod is permanently installed there and the
+#      caller did not need to name it.
+# Ambiguity is a hard failure rather than a first-match-wins, because picking wrong here means
+# installing a branch build over the wrong copy and then "restoring" it onto that copy too.
+#
+# Note the shape of every test below: `if <condition>; then ...; fi`, never a trailing
+# `[[ ... ]] && do_thing`. Under `set -e` a false `&&` test as the last command of a loop body makes
+# the whole loop exit nonzero, which aborts the script (or, inside a $(...), silently returns an empty
+# string). Same reason the house style prefers an inverted `if` over a bare `continue`.
+matches_package_id() {
+    local dir="$1" want_id="$2" found
+    if [[ ! -f "$dir/About/About.xml" ]]; then
+        return 1
+    fi
+    found="$(read_package_id "$dir" 2>/dev/null)" || return 1
+    [[ "$found" == "$want_id" ]]
+}
+
+resolve_overlay_target() {
+    local want_id="$1" exclude_dir="$2" candidate resolved
+    local matches=()
+    for candidate in ${MOD_UT_DIRS[@]+"${MOD_UT_DIRS[@]}"}; do
+        if [[ "$candidate" != "$exclude_dir" ]] && matches_package_id "$candidate" "$want_id"; then
+            matches+=("$candidate")
+        fi
+    done
+    if (( ${#matches[@]} == 0 )); then
+        for candidate in "$MODS_DIR"/*/; do
+            candidate="${candidate%/}"
+            resolved="$(readlink -f "$candidate")"
+            if [[ "$resolved" != "$exclude_dir" ]] && matches_package_id "$candidate" "$want_id"; then
+                matches+=("$resolved")
+            fi
+        done
+    fi
+    if (( ${#matches[@]} == 0 )); then
+        fail "--mod-overlay: nothing installed with packageId '$want_id' to overlay onto. Pass the installed copy as --mod, or symlink it into $MODS_DIR."
+    fi
+    if (( ${#matches[@]} > 1 )); then
+        fail "--mod-overlay: packageId '$want_id' resolves to several folders (${matches[*]}) — ambiguous, refusing to guess."
+    fi
+    printf '%s' "${matches[0]}"
+}
+
+# A worktree passed as BOTH --mod-overlay and --mod is the mistake the overlay flag exists to prevent:
+# two folders sharing one packageId, which RimWorld resolves by a rule nobody should have to know.
+for overlay_arg in ${MOD_OVERLAY_DIRS[@]+"${MOD_OVERLAY_DIRS[@]}"}; do
+    [[ -n "$overlay_arg" ]] || fail "--mod-overlay needs a path."
+    [[ -d "$overlay_arg" ]] || fail "--mod-overlay '$overlay_arg' is not a directory."
+    [[ -f "$overlay_arg/About/About.xml" ]] ||
+        fail "--mod-overlay '$overlay_arg' has no About/About.xml — that's not a RimWorld mod folder."
+    overlay_dir="$(cd "$overlay_arg" && pwd)"
+    for mod_dir in ${MOD_UT_DIRS[@]+"${MOD_UT_DIRS[@]}"}; do
+        if [[ "$mod_dir" == "$overlay_dir" ]]; then
+            fail "'$overlay_dir' is passed as both --mod and --mod-overlay. Use --mod-overlay alone: it installs this build over the already-installed copy, which is what makes the game load it."
+        fi
+    done
+    overlay_src="$overlay_dir/1.6/Assemblies"
+    [[ -d "$overlay_src" ]] ||
+        fail "--mod-overlay '$overlay_dir' has no 1.6/Assemblies — run its build.sh first."
+    overlay_id="$(read_package_id "$overlay_dir")" ||
+        fail "--mod-overlay '$overlay_dir': could not read its packageId."
+    overlay_dest="$(resolve_overlay_target "$overlay_id" "$overlay_dir")/1.6/Assemblies"
+    INSTALL_PAIRS+=("$overlay_src:$overlay_dest")
+    log "--mod-overlay: $overlay_id — $overlay_src -> $overlay_dest"
+done
+
+# Validate every install pair (both forms land here) before anything is locked or touched. The ':'
+# split is why neither path may contain one; saying so now beats a confusing "no such directory".
+INSTALL_SRCS=()
+INSTALL_DESTS=()
+for pair in ${INSTALL_PAIRS[@]+"${INSTALL_PAIRS[@]}"}; do
+    [[ "$pair" == *:* ]] || fail "--install expects <src-dir>:<dest-dir> (got '$pair')."
+    install_src="${pair%%:*}"
+    install_dest="${pair#*:}"
+    if [[ "$install_dest" == *:* ]]; then
+        fail "--install paths may not contain ':' (got '$pair')."
+    fi
+    [[ -d "$install_src" ]] || fail "--install source '$install_src' is not a directory."
+    [[ -d "$install_dest" ]] || fail "--install destination '$install_dest' is not a directory."
+    INSTALL_SRCS+=("$(cd "$install_src" && pwd)")
+    INSTALL_DESTS+=("$(cd "$install_dest" && pwd)")
+done
+
 # A --suite list contributes its entries alongside any given on the command line, so the two ways of
 # selecting scenarios compose instead of one silently winning.
 #
@@ -248,7 +407,16 @@ if [[ -n "$SUITE_LIST_IN" ]]; then
     done < "$SUITE_LIST_IN"
 fi
 
-(( ${#SCENARIOS[@]} )) || usage
+# --recover-only is a repair tool, not a run: it takes the lock, rolls back whatever a dead run left
+# claimed, and exits. It therefore needs no scenario, and refuses one so nobody expects it to also
+# test something.
+if (( RECOVER_ONLY )); then
+    if (( ${#SCENARIOS[@]} )); then
+        fail "--recover-only takes no scenarios — it only rolls back an abandoned claim ledger."
+    fi
+else
+    (( ${#SCENARIOS[@]} )) || usage
+fi
 
 # Resolve to absolute paths up front: the suite list handed to the game must not depend on this
 # script's cwd, and the report folder keeps a copy of it as a run artifact.
@@ -275,15 +443,24 @@ print_config() {
     echo "REAL_CONFIG_DIR=$REAL_CONFIG_DIR"
     echo "CONFIG_DIR=$CONFIG_DIR"
     echo "MODSCONFIG=$MODSCONFIG"
-    echo "MODSCONFIG_BAK=$MODSCONFIG_BAK"
     echo "PREFS=$PREFS"
-    echo "PREFS_BAK=$PREFS_BAK"
     echo "SAVES_DIR=$SAVES_DIR"
     echo "AUTOSTART_SAVE=$AUTOSTART_SAVE"
-    echo "AUTOSTART_BAK=$AUTOSTART_BAK"
     echo "PLAYER_LOG=$PLAYER_LOG"
     echo "RIMWORLD_STDERR=$RIMWORLD_STDERR"
     echo "LOCK_FILE=$LOCK_FILE"
+    echo "LEDGER_FILE=$LEDGER_FILE"
+    echo "CLAIM_BACKUP_DIR=$CLAIM_BACKUP_DIR"
+    # Printed as resolved src->dest pairs rather than as the flags that produced them: --mod-overlay's
+    # whole job is working out the destination, and being able to check that answer without launching
+    # a game is the point of --print-config.
+    # Plain "${!arr[@]}" — index expansion is already empty-safe under `set -u`. (The
+    # ${arr[@]+"${arr[@]}"} guard used elsewhere in this script is for *value* expansion, and writing
+    # it as ${!arr[@]+...} is a parse error: bash reads that as indirect expansion of the array's
+    # value, and dies with "invalid variable name" on a non-empty array.)
+    for i in "${!INSTALL_SRCS[@]}"; do
+        echo "INSTALL=${INSTALL_SRCS[$i]} -> ${INSTALL_DESTS[$i]}"
+    done
     echo "REPORTS_DIR=$REPORTS_DIR"
     # The scenario LIST, not the single $SCENARIO: this function runs before the suite/single split
     # is resolved, so $SCENARIO does not exist yet and reading it here aborted the whole flag under
@@ -353,6 +530,54 @@ live_rimworld_pids() {
 LIVE_RIMWORLD="$(live_rimworld_pids | tr '\n' ' ')"
 if [[ -n "${LIVE_RIMWORLD// /}" ]]; then
     fail "a RimWorldLinux process is already running (PID(s): ${LIVE_RIMWORLD%% }) — close it first. This run will not kill it (it may be your game, or another agent's run)."
+fi
+
+# ---------------------------------------------------------------------------
+# Recover an abandoned claim ledger
+# ---------------------------------------------------------------------------
+# We hold the lock and no game is up, so a ledger sitting at $LEDGER_FILE cannot belong to anything
+# live: some earlier run died before its teardown finished, and whatever it swapped in is still
+# swapped in. Rolling that back BEFORE we take our own claims is what stops the damage compounding —
+# the failure this fixes is a run backing up an already-replaced file, so that the only copy of the
+# real one is in a scratch dir nobody will think to look in. That happened: an 828-mod ModsConfig sat
+# replaced by a 14-mod test list for hours while every run in between passed.
+#
+# --guard is the whole reason this can be automatic. Each item is rolled back only if it still hashes
+# to exactly what the dead run installed; anything edited since is left alone and printed. So the
+# common case (nothing touched it — nobody else knew it was there) is repaired silently, and the
+# ambiguous case is escalated instead of guessed at.
+CLAIM_TOOL="$SCRIPT_DIR/asset_claims.py"
+[[ -f "$CLAIM_TOOL" ]] || fail "$CLAIM_TOOL missing — the runner cannot record what it swaps without it."
+
+recover_abandoned_ledger() {
+    if [[ ! -f "$LEDGER_FILE" ]]; then
+        return 0
+    fi
+    log "--- Step 0: an earlier run left claims behind — rolling them back ---"
+    log "Abandoned ledger: $LEDGER_FILE"
+    # Informational only, so a ledger this script cannot parse must not abort the run before the
+    # restore below has had its go (`set -o pipefail` would otherwise make a nonzero status fatal).
+    python3 "$CLAIM_TOOL" --ledger "$LEDGER_FILE" status 2>&1 | sed 's/^/[run_test]   /' || true
+    if python3 "$CLAIM_TOOL" --ledger "$LEDGER_FILE" restore --guard --verbose \
+            2>&1 | sed 's/^/[run_test]   /'; then
+        log "Recovered — the machine is back to its pre-run state."
+        return 0
+    fi
+    # Something could not be rolled back safely. The ledger is moved aside rather than kept, because
+    # keeping it would block or re-warn on every future run forever; and rather than deleted, because
+    # it names the backups that still hold the original content.
+    local parked="$LEDGER_FILE.unrecovered-$RUN_ID"
+    mv "$LEDGER_FILE" "$parked"
+    log "Warning: some claims above could NOT be rolled back automatically (they were modified after"
+    log "         that run installed them, so restoring would have overwritten someone's change)."
+    log "         The ledger naming their backups is parked at: $parked"
+    log "         Inspect with: python3 $CLAIM_TOOL --ledger $parked status"
+}
+recover_abandoned_ledger
+
+if (( RECOVER_ONLY )); then
+    log "--recover-only: nothing left to do."
+    exit 0
 fi
 
 # One save source per run: it is installed once at boot as autostart.rws, and the mid-suite reload
@@ -498,14 +723,36 @@ seed_isolated_savedata() {
 # ---------------------------------------------------------------------------
 # Cleanup / teardown
 # ---------------------------------------------------------------------------
-# Link names this run created under Mods/, so teardown removes exactly those and never a symlink
-# that was already there (a mod under test is often already installed as a real, played mod).
-CREATED_LINKS=()
-AUTOSTART_BAK_MADE=0
-# The EXIT trap is armed before Step 2, so a failure in between (a bad symlink, say) used to reach the
-# restore path with no backups taken — and "no backup" means "no prior autostart.rws existed", so it
-# would delete the user's real save. Only undo the swap if we actually made it.
-BACKUPS_TAKEN=0
+# Everything this run swaps is recorded in the ledger before it is swapped, so teardown is a single
+# rollback of that record rather than a hand-maintained list of undo steps.
+#
+# This replaces three separate bits of bookkeeping — CREATED_LINKS, AUTOSTART_BAK_MADE and
+# BACKUPS_TAKEN — that each tracked one mutation and had to be kept in step with the code that made
+# it. The bug that motivates a single record is the one BACKUPS_TAKEN was itself a patch for: reaching
+# the restore path having taken no backup, where "no backup" was indistinguishable from "no prior file
+# existed", so teardown deleted the user's real save. A claim states the prior state explicitly
+# (absent / file / symlink), so there is no gap to misread.
+#
+# LEDGER_OPEN gates teardown the way BACKUPS_TAKEN used to gate the restore: the EXIT trap is armed
+# before any claim is taken, and a rollback of claims that were never recorded must be a no-op.
+LEDGER_OPEN=0
+
+# Thin wrappers so call sites read as intent, and so every claim path goes through one place that
+# knows to abort the run when a claim cannot be recorded. An unrecorded mutation is strictly worse
+# than no run: it is the leftover a later run silently inherits.
+claim_path_for_write() {   # claim DEST, which we are about to write ourselves; seal it afterwards
+    python3 "$CLAIM_TOOL" --ledger "$LEDGER_FILE" claim --dest "$1" ||
+        fail "could not record a claim on $1 — refusing to modify it unrecorded."
+}
+seal_claim() {
+    python3 "$CLAIM_TOOL" --ledger "$LEDGER_FILE" seal --dest "$1" ||
+        fail "could not seal the claim on $1."
+}
+claim_symlink_at() {       # point $1 at $2 for this run, recording whatever was there
+    python3 "$CLAIM_TOOL" --ledger "$LEDGER_FILE" symlink --path "$1" --target "$2" |
+        sed 's/^/[run_test] /' ||
+        fail "could not claim the mod symlink $1."
+}
 
 # ----- process control (PID-scoped, never by name) -----
 RIMWORLD_PID=""
@@ -567,9 +814,21 @@ cleanup() {
     kill_rimworld
     if [[ $NO_TEARDOWN -eq 0 ]]; then
         teardown
-        discard_run_scratch
+        # Only once teardown has actually put everything back. If it could not, the ledger is still
+        # open and its claims still name backups in $CLAIM_BACKUP_DIR — discarding them here would
+        # destroy the only copy of the content the next run (or a human) needs to finish the rollback,
+        # which is the same "the backup was the last copy" failure the ledger exists to prevent.
+        if [[ $LEDGER_OPEN -eq 0 ]]; then
+            discard_run_scratch
+        else
+            log "Keeping $CLAIM_BACKUP_DIR — the claims above still need it."
+        fi
     else
+        # The ledger deliberately survives --no-teardown: it is the record of what is still swapped
+        # in, and the next run rolls it back (hash-guarded) rather than inheriting it blindly.
         log "--no-teardown: leaving symlinks, ModsConfig, Saves/autostart.rws, and $RUN_TMP_DIR in place."
+        log "              Claims remain recorded in $LEDGER_FILE — roll them back with:"
+        log "              $SCRIPT_DIR/run_test.sh --recover-only"
     fi
 }
 trap cleanup EXIT INT TERM
@@ -610,99 +869,93 @@ PY
 }
 
 discard_run_scratch() {
-    rm -f "$MODSCONFIG_BAK" "$AUTOSTART_BAK" "$PREFS_BAK"
+    rm -rf "$CLAIM_BACKUP_DIR"
     [[ "$ISOLATE_SAVEDATA" == "1" ]] && rm -rf "$CONFIG_DIR"
     rmdir "$RUN_TMP_DIR" 2>/dev/null || log "Logs kept in $RUN_TMP_DIR"
 }
 
-restore_swapped_config() {
-    log "Restoring ModsConfig from backup..."
-    if [[ -f "$MODSCONFIG_BAK" ]]; then
-        cp "$MODSCONFIG_BAK" "$MODSCONFIG"
-        log "ModsConfig restored."
-    else
-        log "Warning: no ModsConfig backup found at $MODSCONFIG_BAK"
-    fi
-
-    # Restored from the backup rather than by flipping <devMode> back, because RimWorld rewrites the
-    # whole of Prefs.xml from memory on exit — anything else the run touched would otherwise persist.
-    # This runs after the game process has been waited on, so the game's own final write cannot land
-    # on top of the restore.
-    log "Restoring Prefs from backup..."
-    if [[ -f "$PREFS_BAK" ]]; then
-        cp "$PREFS_BAK" "$PREFS"
-        log "Prefs restored."
-    else
-        log "Warning: no Prefs backup found at $PREFS_BAK"
-    fi
-
-    log "Restoring Saves/autostart.rws..."
-    if [[ $AUTOSTART_BAK_MADE -eq 1 ]]; then
-        cp "$AUTOSTART_BAK" "$AUTOSTART_SAVE"
-        log "autostart.rws restored from backup."
-    else
-        rm -f "$AUTOSTART_SAVE"
-        log "No prior autostart.rws existed — removed the fixture copy."
-    fi
-}
-
+# Teardown is now one operation: roll the ledger back, newest claim first.
+#
+# Deliberately UNGUARDED, unlike the recovery path at Step 0. The guard asks "is this still exactly
+# what we installed?", and here the answer is legitimately no for two of the claims: RimWorld rewrites
+# the whole of Prefs.xml from memory as it exits, and the game may have touched the save. This run owns
+# those files — it recorded what was there before it took them — so it restores unconditionally. The
+# guard exists for the case where we are undoing a run that is no longer around to vouch for itself.
+#
+# This runs after kill_rimworld has waited on the game, so the game's own final write cannot land on
+# top of the restore.
 teardown() {
-    if [[ $BACKUPS_TAKEN -eq 1 ]]; then
-        restore_swapped_config
-    else
-        log "Nothing to restore — the run never got as far as backing up ModsConfig/autostart.rws."
+    if [[ $LEDGER_OPEN -eq 0 ]]; then
+        log "Nothing to restore — the run never claimed anything."
+        return 0
     fi
-
-    log "Removing symlinks this run created..."
-    local link_name
-    for link_name in ${CREATED_LINKS[@]+"${CREATED_LINKS[@]}"}; do
-        rm -f "$MODS_DIR/$link_name"
-    done
+    log "Rolling back every claim (config, save, mod symlinks, installed assemblies)..."
+    # Never fatal: a teardown that aborted partway would leave more global state swapped than one that
+    # pushed on and reported. asset_claims.py prints each item it could not put back, and exits
+    # nonzero, which we surface rather than propagate.
+    if python3 "$CLAIM_TOOL" --ledger "$LEDGER_FILE" restore --verbose 2>&1 | sed 's/^/[run_test]   /'; then
+        log "All claims rolled back; ledger closed."
+        LEDGER_OPEN=0
+    else
+        log "Warning: some claims could not be rolled back — see above. Ledger kept at $LEDGER_FILE;"
+        log "         the next run will try again (hash-guarded), or use --recover-only now."
+    fi
 }
 
 # ---------------------------------------------------------------------------
-# Step 1: symlinks (idempotent — never touch a symlink/dir that already existed,
-# a mod under test is often already active as a real, played mod)
+# Step 1: claim the mod symlinks
 # ---------------------------------------------------------------------------
-setup_symlink() {
-    local target="$1" link_name="$2"
-    if [[ -e "$MODS_DIR/$link_name" || -L "$MODS_DIR/$link_name" ]]; then
-        log "Mods/$link_name already present — leaving as-is."
-    else
-        ln -s "$target" "$MODS_DIR/$link_name"
-        CREATED_LINKS+=("$link_name")
-        log "Symlinked Mods/$link_name -> $target"
-    fi
-}
+# Every mod folder the run needs gets a claimed symlink: the previous state is recorded, the link is
+# pointed at the folder we were given, and teardown puts it back.
+#
+# The old rule was "if something is already there, leave it alone", which looked like the careful
+# choice and was not. Every worktree's probe-bridge mod has the same basename and packageId
+# (`TestMod`), so a link left behind by a crashed run on another branch silently won over the --mod
+# this run was handed — and the failure shows up as a *selective* missing probe (anything added after
+# that branch), which reads like a bug in the mod's own registration code and sends you looking in
+# entirely the wrong file. Repointing is safe because we hold the run lock: no other run exists to
+# disturb, and the prior target is recorded either way.
+#
+# An already-correct link is still claimed. It costs nothing, its rollback is a no-op, and it makes
+# the ledger a complete statement of what the run loaded — which is what you want to read afterwards
+# when a result is confusing.
 log "--- Step 1: mod symlinks ---"
-setup_symlink "$REPO_DIR" "RimWorldTestHarness"
+python3 "$CLAIM_TOOL" --ledger "$LEDGER_FILE" begin --run-id "$RUN_ID" --backup-dir "$CLAIM_BACKUP_DIR" ||
+    fail "could not open the claim ledger at $LEDGER_FILE."
+LEDGER_OPEN=1
+log "Claim ledger: $LEDGER_FILE (backups in $CLAIM_BACKUP_DIR)"
+
+claim_symlink_at "$MODS_DIR/RimWorldTestHarness" "$REPO_DIR"
+log "Mods/RimWorldTestHarness -> $REPO_DIR"
 for i in "${!MOD_UT_DIRS[@]}"; do
-    setup_symlink "${MOD_UT_DIRS[$i]}" "${MOD_UT_LINKS[$i]}"
+    claim_symlink_at "$MODS_DIR/${MOD_UT_LINKS[$i]}" "${MOD_UT_DIRS[$i]}"
+    log "Mods/${MOD_UT_LINKS[$i]} -> ${MOD_UT_DIRS[$i]}"
 done
 
 # ---------------------------------------------------------------------------
-# Step 2: back up ModsConfig.xml and any existing autostart.rws
+# Step 2: claim ModsConfig.xml, Prefs.xml and any existing autostart.rws
 # ---------------------------------------------------------------------------
-log "--- Step 2: backups ---"
+# Claimed rather than copied to a .bak of our own: same backup, but recorded in the ledger, so a run
+# that dies before teardown leaves a machine-readable statement of what it swapped instead of a
+# scratch directory nobody will think to search. That distinction is the whole outage — the real
+# 828-mod ModsConfig had been sitting in an old /tmp/rwth-run-*/ for hours while every run in between
+# happily backed up the test list that had replaced it.
+log "--- Step 2: claiming the files this run swaps ---"
 [[ -f "$MODSCONFIG" ]] || fail "ModsConfig.xml not found at $MODSCONFIG — has RimWorld been run at least once?"
-cp "$MODSCONFIG" "$MODSCONFIG_BAK"
-log "Backed up ModsConfig.xml -> $MODSCONFIG_BAK"
+claim_path_for_write "$MODSCONFIG"
+log "Claimed ModsConfig.xml"
 
 [[ -f "$PREFS" ]] || fail "Prefs.xml not found at $PREFS — has RimWorld been run at least once?"
-cp "$PREFS" "$PREFS_BAK"
-log "Backed up Prefs.xml -> $PREFS_BAK"
+claim_path_for_write "$PREFS"
+log "Claimed Prefs.xml"
 seed_devmode
+seal_claim "$PREFS"
 
 mkdir -p "$SAVES_DIR"
-if [[ -f "$AUTOSTART_SAVE" ]]; then
-    cp "$AUTOSTART_SAVE" "$AUTOSTART_BAK"
-    AUTOSTART_BAK_MADE=1
-    log "Backed up existing autostart.rws -> $AUTOSTART_BAK"
-else
-    log "No existing autostart.rws — nothing to back up."
-fi
-# From here on teardown has something real to undo (see BACKUPS_TAKEN above).
-BACKUPS_TAKEN=1
+# Claimed whether or not it exists. "Absent" is a recorded prior state, not the absence of a record —
+# which is the distinction that stops teardown deleting a real save it never backed up.
+claim_path_for_write "$AUTOSTART_SAVE"
+log "Claimed Saves/autostart.rws (present before this run: $([[ -f "$AUTOSTART_SAVE" ]] && echo yes || echo no))"
 
 # ---------------------------------------------------------------------------
 # Step 3: write minimal ModsConfig.xml
@@ -781,6 +1034,11 @@ for pid in active:
     print(f"[run_test]     <li>{pid}</li>")
 PYEOF
 
+# Record the hash of the list we just generated. This is what lets a LATER run tell "the test list is
+# still exactly as we left it, so restoring the real one is safe" from "someone has edited this since"
+# — and it is the specific check that would have caught the real 828-mod list being replaced.
+seal_claim "$MODSCONFIG"
+
 # ---------------------------------------------------------------------------
 # Step 4: install the save source
 #   - Fixture mode: copy the fixture in as autostart.rws so vanilla autostarts it.
@@ -795,8 +1053,95 @@ if [[ $USE_QUICKTEST -eq 0 ]]; then
 else
     log "--- Step 4: quicktest mode — clearing autostart.rws so a fresh colony is generated ---"
     rm -f "$AUTOSTART_SAVE"
-    log "Removed any autostart.rws (backed up in Step 2, restored on teardown)."
+    log "Removed any autostart.rws (claimed in Step 2, restored on teardown)."
 fi
+seal_claim "$AUTOSTART_SAVE"
+
+# ---------------------------------------------------------------------------
+# Step 4b: install branch builds over their installed counterparts
+# ---------------------------------------------------------------------------
+# The step this whole mechanism exists for. `Mods/<Mod>` is a permanent symlink to a mod's main
+# checkout, and Step 1 will not repoint it at a worktree without being told to (nor should it — two
+# folders sharing a packageId is its own problem), so live-testing a branch means the branch's build
+# output has to sit at the path the game already resolves to.
+#
+# Callers used to do that copy themselves, before invoking this script. That is the race: the copy
+# happened outside the lock, so an agent could install its assembly, block on the lock, and have
+# another agent's game boot against it — with the frames from that run reported as evidence for a fix
+# that was never loaded. Doing it here means install, run and restore are all inside the same lock,
+# and the restore is recorded rather than remembered.
+install_claimed_overlays() {
+    if (( ${#INSTALL_SRCS[@]} == 0 )); then
+        return 0
+    fi
+    log "--- Step 4b: installing ${#INSTALL_SRCS[@]} build overlay(s) ---"
+    local i
+    for i in "${!INSTALL_SRCS[@]}"; do
+        log "${INSTALL_SRCS[$i]} -> ${INSTALL_DESTS[$i]}"
+        python3 "$CLAIM_TOOL" --ledger "$LEDGER_FILE" overlay \
+            --src "${INSTALL_SRCS[$i]}" --dest "${INSTALL_DESTS[$i]}" 2>&1 | sed 's/^/[run_test] /' ||
+            fail "could not install ${INSTALL_SRCS[$i]} over ${INSTALL_DESTS[$i]}."
+    done
+}
+install_claimed_overlays
+
+# ---------------------------------------------------------------------------
+# Step 4c: fingerprint what will actually load
+# ---------------------------------------------------------------------------
+# Print the resolved target and content hash of every assembly the run is about to load. Nothing here
+# changes behaviour; it exists because "which build did that run actually measure?" has been an
+# unanswerable question after the fact more than once, and the answer is cheap to write down at the
+# only moment it is knowable. Read it back off the run log when a result looks wrong.
+log "--- Step 4c: what will load ---"
+fingerprint_assemblies() {
+    local mod_link resolved dll
+    for mod_link in "$MODS_DIR/RimWorldTestHarness" ${MOD_UT_LINKS[@]+"${MOD_UT_LINKS[@]/#/$MODS_DIR/}"}; do
+        resolved="$(readlink -f "$mod_link" 2>/dev/null || echo '?')"
+        log "  $(basename "$mod_link") -> $resolved"
+        while IFS= read -r dll; do
+            # `|| echo ?` so an unreadable assembly costs a fingerprint, not the run: this whole
+            # block is evidence-gathering, and under `set -e` a failed substitution inside `log`
+            # would abort a run that was otherwise fine.
+            log "    $(md5sum "$dll" 2>/dev/null | cut -c1-12 || echo '?')  ${dll#"$resolved"/}"
+        done < <(find "$resolved" -path '*/Assemblies/*.dll' -type f 2>/dev/null | sort)
+    done
+}
+fingerprint_assemblies
+
+# A probe bridge built against a different tree than the build we just installed is the failure that
+# looks like nothing: the bridge's assembly references a type the installed DLL doesn't have, the
+# whole assembly throws ReflectionTypeLoadException at load, every probe and feature it registers
+# silently goes missing — and `Screenshot` steps keep working, so the run produces a full set of
+# plausible frames. Warn rather than refuse: a bridge that shares no types with the mod is legitimate,
+# and we cannot tell the two apart without reading assembly references.
+#
+# The "is this overlay coherent?" test is a named predicate rather than a `return` out of the middle
+# of the loop below, because returning from the function on the first coherent overlay would silently
+# skip checking every later one.
+some_mod_lives_under() {
+    local root="$1" bridge
+    for bridge in ${MOD_UT_DIRS[@]+"${MOD_UT_DIRS[@]}"}; do
+        if [[ "$bridge" == "$root"/* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+warn_on_split_build() {
+    local overlay_src overlay_root
+    for overlay_src in ${INSTALL_SRCS[@]+"${INSTALL_SRCS[@]}"}; do
+        overlay_root="${overlay_src%/1.6/Assemblies}"
+        if some_mod_lives_under "$overlay_root"; then
+            continue   # a --mod folder comes from the overlaid tree, so they share a build
+        fi
+        log "  Warning: no --mod folder lives inside $overlay_root, whose build is being installed."
+        log "           If one of them is that mod's probe bridge, it was built against a different"
+        log "           tree, and a type it references may be missing from the DLL just installed —"
+        log "           which unregisters every probe at load while screenshots still succeed."
+    done
+}
+warn_on_split_build
 
 # ---------------------------------------------------------------------------
 # Step 5: launch, with retry on the known early-startup Boehm-GC crash
@@ -932,6 +1277,39 @@ log "Report file present."
 if ! grep -q "RWTH: scenario complete" "$PLAYER_LOG" 2>/dev/null; then
     log "Warning: report file exists but the \"RWTH: scenario complete\" marker wasn't seen in Player.log — proceeding anyway."
 fi
+
+# A mod assembly that fails to type-load takes every probe and feature it registers with it, and
+# says so only in Player.log. `Screenshot` steps carry on working, so the run yields a full set of
+# plausible frames and can even come out green if nothing asserted a number. That is the worst shape
+# a result can have, so it is a hard failure here rather than a line nobody reads.
+#
+# Safe to treat as ours: Step 3 writes a minimal modlist — Core, DLCs, Harmony, and the mods this run
+# was given — so there is no third-party mod present to blame it on. The usual cause is a probe bridge
+# and the mod it probes coming from two different builds (see Step 4c's warning).
+#
+# RWTH_ALLOW_TYPE_LOAD_ERRORS=1 downgrades it to a warning. Kept as an escape hatch rather than
+# trusted-by-default because this gate was added from one observed failure: if some vanilla or DLC
+# path turns out to log one of these harmlessly, a hard gate would block every run on the box, and
+# nobody should have to edit the runner to get unblocked. Reach for it only after reading the lines it
+# printed — the whole point is that these are invisible otherwise.
+TYPE_LOAD_PATTERN="ReflectionTypeLoadException\|Could not resolve type with token\|Unable to load one or more of the requested types"
+assert_no_type_load_failure() {
+    local hits
+    hits="$(grep -c "$TYPE_LOAD_PATTERN" "$PLAYER_LOG" 2>/dev/null || true)"
+    if [[ "${hits:-0}" -eq 0 ]]; then
+        return 0
+    fi
+    log "Player.log type-load errors:"
+    grep -m 5 -A 2 "$TYPE_LOAD_PATTERN" "$PLAYER_LOG" 2>/dev/null | sed 's/^/[run_test]   /' || true
+    local detail="a mod assembly failed to type-load ($hits line(s) in $PLAYER_LOG). Every probe and feature it registers is silently absent, so this run's results mean nothing — even the ones that passed. Usual cause: the probe bridge and the mod it probes came from different builds; check Step 4c's fingerprints above."
+    if [[ "${RWTH_ALLOW_TYPE_LOAD_ERRORS:-0}" == "1" ]]; then
+        log "Warning: $detail"
+        log "         Continuing only because RWTH_ALLOW_TYPE_LOAD_ERRORS=1."
+    else
+        fail "$detail Set RWTH_ALLOW_TYPE_LOAD_ERRORS=1 to proceed anyway."
+    fi
+}
+assert_no_type_load_failure
 
 # Give RimWorldLinux a moment to quit on its own (ScenarioDriver calls Application.Quit()
 # right after writing the report); kill it if it's still around after that.
