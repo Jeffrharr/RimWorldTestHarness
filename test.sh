@@ -2,6 +2,15 @@
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
+# Runner/asset_claims.py is python, not C#, because it is the runner's own bookkeeping — but it is
+# the part of the runner with real branching to get wrong (what was here before, is it still what we
+# installed, what does undoing it mean), so it gets the same treatment as the Shared/ logic: offline
+# tests over a tmpdir, no game and no lock. Run first because it is the fastest gate by two orders of
+# magnitude.
+# Deliberately not given "$@" — those are dotnet test's flags, and unittest would reject them.
+cd "$ROOT"
+python3 -m unittest discover -s Tests/runner
+
 cd "$ROOT/Tests/RimWorldTestHarness.Tests"
 /home/deck/.dotnet/dotnet test "$@"
 

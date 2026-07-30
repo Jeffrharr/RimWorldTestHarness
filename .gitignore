@@ -7,5 +7,6 @@ Runner/reports/
 Tests/**/obj/
 Tests/**/bin/
 Fixtures/*.rws
+__pycache__/
 .tokensave/
 .claude/
