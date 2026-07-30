@@ -585,6 +585,17 @@ Two consequences worth stating, because both were learned the hard way:
   that means nothing. `Runner/asset_claims.py` is covered by `Tests/runner/test_asset_claims.py` —
   offline, no game, no lock, ~30 cases pinning each failure above.
 
+### Validated live, 2026-07-30
+
+Four real runs on this box, each checked by md5 on both sides rather than by reading the log:
+
+| | what it proved |
+|---|---|
+| harness-only, own scenario | 4 claims taken and rolled back; `ModsConfig`/`Prefs` byte-identical afterwards. `Mods/RimWorldTestHarness` was repointed at the harness worktree for the run and handed back — without that, running from a worktree loads the *main* checkout's harness, so the change under test would never have executed. |
+| `--mod-overlay` of a branch build | Step 4c fingerprinted `Mods/CelestialLighting -> <main checkout>` while the DLL at that path hashed to the **worktree's** build; scenario passed; teardown restored `.dll` and `.pdb` to the main checkout's hashes exactly. |
+| same probe bridge, overlay omitted | Reproduced the split-build failure exactly: `ReflectionTypeLoadException` on `CelestialLighting.AuroraCurtainHemRays`, `ProbeRegistration`'s static constructor dead, every probe gone. The run **failed** naming the cause, where before it would have written a full set of plausible frames. |
+| `SIGKILL` mid-run, then recovery | Left the machine dirty in the documented shape (test-list `ModsConfig`, branch DLL over the main checkout, a stray `Mods/TestMod`). `--recover-only` rolled all 8 claims back byte-exact. Repeated with a hand-edit to `ModsConfig` in between: the guard **skipped that one file**, restored the other seven, and parked the ledger under `.unrecovered-<run-id>` so its backup survives without blocking later runs. |
+
 ## Timelapse: video as a clock sweep, not a screen recording
 
 A `Timelapse` step produces a video of the map over a span of hours. It is the only composite step:
