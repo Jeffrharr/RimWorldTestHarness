@@ -41,6 +41,13 @@ public static class HarnessMod
         // throw is swallowed, which is the documented behaviour.
         Shared.WorldOverrideHookRegistry.ErrorSink = message => Log.Warning($"[RWTH] {message}");
 
+        // The harness's own clock, readable like any other probe. Registered here rather than left to
+        // a mod under test because what they measure is this harness's time manipulation, not any
+        // mod's behaviour — and a scenario debugging a clock problem should not have to depend on
+        // whichever mod happens to be loaded to ask what time it is.
+        Probes.ProbeRegistry.Register(new Probes.BuiltIn.TicksAbsProbe());
+        Probes.ProbeRegistry.Register(new Probes.BuiltIn.AbsoluteDayProbe());
+
         // Before anything can load a scenario: the loader validates step types against the registry,
         // so discovery has to have run or every step in every scenario reads as an unknown type.
         Steps.StepDiscovery.RunOnce();
