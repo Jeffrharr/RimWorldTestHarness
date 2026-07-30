@@ -86,7 +86,66 @@ The run mutates global machine state, so it defends itself rather than trusting 
 `--print-config` prints every path the run would use and exits without launching, locking, or creating
 anything — handy to confirm two invocations really are isolated.
 
-Overridable: `RWTH_CONFIG_DIR` (game save-data root), `RWTH_RUN_TMP_DIR`, `RWTH_LOCK_FILE`.
+Overridable: `RWTH_CONFIG_DIR` (game save-data root), `RWTH_RUN_TMP_DIR`, `RWTH_LOCK_FILE`,
+`RWTH_LEDGER_FILE` (don't override this one without the lock file — see below).
+
+## Live-testing a branch: `--mod-overlay`
+
+`Mods/<Mod>` is a permanent symlink to a mod's **main checkout**, so naming a git worktree with
+`--mod` does not change which DLL the game loads. `--mod-overlay` installs a worktree's build over the
+already-installed copy for the duration of the run, then puts the original back:
+
+```bash
+./Runner/run_test.sh \
+  --mod        /path/to/CelestialLighting \
+  --mod-overlay /path/to/.worktrees/CelestialLighting-my-branch \
+  --mod        /path/to/.worktrees/CelestialLighting-my-branch/TestMod \
+  /path/to/CelestialLighting/Tests/Scenarios/x.json
+```
+
+- It resolves the destination itself, by matching the worktree's `packageId` against the `--mod`
+  folders and then `Mods/` — `--print-config` shows the resolved `src -> dest` without launching.
+- Pass the worktree to `--mod-overlay` **only**, never also to `--mod`: that gives two mod folders
+  sharing one `packageId`, which is the problem this flag avoids. The runner refuses it.
+- The whole `1.6/Assemblies` directory moves, not a named DLL — a `.dll` without its matching `.pdb`
+  makes Mono fault during assembly load and RimWorld dies with `signo:11` right after the harness
+  loads, which looks exactly like a crash in your own patch code.
+- Keep the probe bridge and the mod it probes on the **same** tree. A bridge built elsewhere may
+  reference a type the installed DLL lacks; the assembly then fails to type-load, every probe and
+  feature it registers silently disappears, and `Screenshot` steps keep working — so you get a full
+  set of plausible frames. The runner warns when the trees differ and **fails** if `Player.log` shows
+  a type-load error.
+
+`--install <src-dir>:<dst-dir>` is the same thing with both paths spelled out, for anything that isn't
+a mod's assemblies.
+
+## Asset claims: nothing is swapped without being written down
+
+The lock stops two runs overlapping. It never covered what callers swapped in *around* a run — chiefly
+the branch build copied over the main checkout so the `Mods/` symlink would resolve to it. That copy
+sat outside the lock, so a run could boot against another agent's assembly, and a run that died left
+its DLL and a stale `Mods/TestMod` behind for the next one to load silently.
+
+Every global mutation is now a **claim**, recorded by `Runner/asset_claims.py` before it happens:
+`ModsConfig.xml`, `Prefs.xml`, `Saves/autostart.rws`, each mod symlink, and each installed file. A
+claim records what was there before (absent / file / symlink-to-X) and a hash of what the run put
+there. Teardown is one rollback of that ledger.
+
+- **Mod symlinks are claimed, not tiptoed around.** A `Mods/TestMod` left by another branch's crashed
+  run is *repointed* at the folder you passed and handed back afterwards. It used to win — and because
+  every worktree's probe mod shares that basename and `packageId`, the symptom was only your *newest*
+  probes going missing, which looks like a registration bug in your own code.
+- **A crashed run is cleaned up by the next one.** The ledger lives at `/tmp/rwth-claims-<uid>.json`
+  and is read under the lock, so its presence can only mean an earlier run died mid-flight. Recovery
+  is **hash-guarded**: an item is rolled back only if it still matches what that run installed, so
+  nothing you have edited since gets overwritten. Anything ambiguous is reported, not guessed at.
+- **`--recover-only`** does just that rollback and exits, if you want it now rather than on the next
+  run. `--no-teardown` intentionally leaves the ledger in place and tells you this.
+- **Inspect at any time:** `python3 Runner/asset_claims.py --ledger /tmp/rwth-claims-$(id -u).json status`
+
+Every run also logs, just before launch, the resolved target and content hash of each assembly that
+will load. "Which build did that run actually measure?" has been unanswerable after the fact more than
+once; it is cheap to write down at the only moment it is knowable.
 
 ### `RWTH_ISOLATE_SAVEDATA=1` — opt-in, not yet validated by a live run
 
