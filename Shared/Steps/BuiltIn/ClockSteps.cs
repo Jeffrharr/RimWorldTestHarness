@@ -97,6 +97,52 @@ public sealed class AdvanceTimeStep : IStepSpec
     }
 }
 
+// AdvanceTicks — move the clock forward by an exact number of TICKS, without simulating them.
+//
+// WHY IT EXISTS ALONGSIDE THE OTHER TWO. AdvanceTime is the same jump measured in hours, and
+// FastForward is the same distance actually lived through. Neither one can film an effect that
+// animates on the tick counter:
+//
+//   - AdvanceTime's unit is too coarse to express one. A tick-driven effect moves in tick-sized
+//     amounts, and the hours that express them are unreadable: 12 ticks is 0.0048 hours, a number
+//     nobody authoring a scenario should have to write, and one that only round-trips exactly
+//     because 2500 ticks/hour happens to divide evenly. Spell the unit the effect actually uses.
+//   - FastForward cannot hold an INTERVAL steady. It raises the game to Superfast, waits for a tick
+//     target, and never pauses again, so the game keeps ticking through the settle frames and the
+//     screenshot flush that follow. The gap between two captures is then the requested ticks plus
+//     however many elapsed while the PNG was written — a different number every frame. A sequence
+//     shot that way judders however steady the effect itself is: the effect is fine, the camera is
+//     not. A jump is exact, so evenly spaced frames come out evenly spaced.
+//
+// It is a JUMP, so the world does not live through the ticks — nothing grows, burns, or walks. That
+// is the point: everything on screen holds still except what reads the tick counter.
+public sealed class AdvanceTicksStep : IStepSpec
+{
+    public string Type => StepArgs.AdvanceTicksType;
+    public ScenarioResidue Residue => ScenarioResidue.Clock;
+    public bool LiveCallable => true;
+
+    public bool TryValidate(IReadOnlyDictionary<string, string> args, out string? error)
+    {
+        if (!ArgReader.ValidateKnownArgs(args, new[] { StepArgs.AdvanceTicksTicks }, out error))
+            return false;
+        if (!ArgReader.TryReadInt(args, StepArgs.AdvanceTicksTicks, 0, out int ticks, out error))
+            return false;
+
+        // Zero is rejected for the reason AdvanceTime rejects it: a zero-tick advance captures the
+        // same instant twice, which reads as a stutter in the sequence rather than as an error.
+        if (ticks <= 0)
+        {
+            error = $"'{StepArgs.AdvanceTicksTicks}' must be greater than 0 (got {ticks}); " +
+                    $"to live through the ticks rather than jump them use '{StepArgs.FastForwardType}'";
+            return false;
+        }
+
+        error = null;
+        return true;
+    }
+}
+
 // TimeSpeed as well as Clock: FastForward raises the game to Superfast and never lowers it, so a
 // following scenario would find the colony running while it tries to hold a moment still.
 public sealed class FastForwardStep : IStepSpec

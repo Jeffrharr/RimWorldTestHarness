@@ -22,6 +22,12 @@ public static class StepArgs
     public const string FastForwardType = "FastForward";
     public const string FastForwardTicks = "ticks"; // int
 
+    // AdvanceTicks is to FastForward what AdvanceTime is to a simulated hour: it moves TicksGame by
+    // an exact amount with no simulation at all. See Steps/BuiltIn/ClockSteps.cs for why a tick-unit
+    // jump exists alongside the hour-unit one.
+    public const string AdvanceTicksType = "AdvanceTicks";
+    public const string AdvanceTicksTicks = "ticks"; // int, > 0
+
     public const string ProbeType = "Probe";
     public const string ProbeName = "probeName"; // must match a registered IProbe.Name
     public const string ProbeExpectedValue = "expectedValue"; // float
@@ -153,4 +159,15 @@ public static class StepArgs
     public const string TimelapseFileNamePrefix = "fileNamePrefix"; // default "timelapse"
     public const string TimelapseSettleFrames = "settleFrames";   // int >= 0, default 2
     public const string TimelapseFps = "fps";                     // int 1..60, default 12
+
+    // TickLapse is Timelapse's short-interval sibling: same numbered-PNG-sequence output and the
+    // same stitching downstream, but each frame steps the clock by TICKS rather than hours, so it
+    // films an effect that animates on the tick counter instead of on the hour of day. See
+    // TickLapseExpander for why a sub-hour Timelapse is not a substitute.
+    public const string TickLapseType = "TickLapse";
+    public const string TickLapseTicks = "ticks";                   // int > 0, default 10
+    public const string TickLapseSteps = "steps";                   // int > 0, default 120
+    public const string TickLapseFileNamePrefix = "fileNamePrefix"; // default "ticklapse"
+    public const string TickLapseSettleFrames = "settleFrames";     // int >= 0, default 2
+    public const string TickLapseFps = "fps";                       // int 1..60, default 20
 }

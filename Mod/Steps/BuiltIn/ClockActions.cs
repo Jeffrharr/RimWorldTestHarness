@@ -72,6 +72,29 @@ public sealed class AdvanceTimeAction : IStepAction
     }
 }
 
+// The game-touching half of AdvanceTicks. See Shared/Steps/BuiltIn/ClockSteps.cs for why a
+// tick-unit jump exists next to the hour-unit one.
+//
+// The same DebugSetTicksGame lever AdvanceTime pulls, minus the hours-to-ticks conversion — the
+// argument already is the number the clock is measured in, so there is nothing to round and nothing
+// to drift. Deliberately does NOT touch CurTimeSpeed: a scenario filming a tick-driven effect wants
+// the game paused between jumps, so the only thing that moves between two captures is the jump.
+public sealed class AdvanceTicksAction : IStepAction
+{
+    public string Type => StepArgs.AdvanceTicksType;
+
+    public StepOutcome Execute(IReadOnlyDictionary<string, string> args, StepContext ctx)
+    {
+        int ticks = int.Parse(args[StepArgs.AdvanceTicksTicks]);
+        if (ticks <= 0)
+            return StepOutcome.Fail($"'{StepArgs.AdvanceTicksTicks}' must be greater than 0 (got {ticks})");
+
+        Find.TickManager.DebugSetTicksGame(Find.TickManager.TicksGame + ticks);
+
+        return new StepOutcome();
+    }
+}
+
 public sealed class FastForwardAction : IStepAction
 {
     public string Type => StepArgs.FastForwardType;

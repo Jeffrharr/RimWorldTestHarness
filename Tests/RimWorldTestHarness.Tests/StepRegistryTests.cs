@@ -22,12 +22,13 @@ public class StepRegistryTests
         string[] expected =
         {
             StepArgs.SetTileType, StepArgs.SetSeasonType, StepArgs.SetTimeType,
-            StepArgs.AdvanceTimeType,
+            StepArgs.AdvanceTimeType, StepArgs.AdvanceTicksType,
             StepArgs.FastForwardType, StepArgs.WaitType, StepArgs.ProbeType,
             StepArgs.ScreenshotType, StepArgs.SetFeatureType, StepArgs.StartConditionType,
             StepArgs.PlaceThingsType, StepArgs.SetTerrainType, StepArgs.SetRoofType,
             StepArgs.LookAtType,
-            StepArgs.SpawnPawnType, StepArgs.TimelapseType, "SetWeather", "SetBiome", "SetSnow",
+            StepArgs.SpawnPawnType, StepArgs.TimelapseType, StepArgs.TickLapseType,
+            "SetWeather", "SetBiome", "SetSnow",
             "Assert",
             LandInOrbitStep.StepType,
         };
@@ -52,8 +53,10 @@ public class StepRegistryTests
         {
             StepArgs.SetTileType, StepArgs.SetSeasonType, StepArgs.SetTimeType,
             // AdvanceTime joins its absolute sibling: it moves the clock and touches nothing else,
-            // so it is as safe against a real colony as SetTime is.
-            StepArgs.AdvanceTimeType,
+            // so it is as safe against a real colony as SetTime is. AdvanceTicks is the same jump in
+            // a smaller unit — strictly less world movement than the FastForward already on this
+            // list, which actually simulates the ticks it skips.
+            StepArgs.AdvanceTimeType, StepArgs.AdvanceTicksType,
             StepArgs.FastForwardType, StepArgs.ProbeType, StepArgs.ScreenshotType,
             StepArgs.SetFeatureType,
         };
@@ -109,13 +112,14 @@ public class StepRegistryTests
     }
 
     // Composites are the one legitimate reason for a spec to have no executing half, so the
-    // spec/action consistency check has to know the difference. Timelapse is the built-in case.
+    // spec/action consistency check has to know the difference. The two sweeps are the built-in
+    // cases; anything else appearing here is a step that lost its action.
     [Test]
-    public void Timelapse_IsTheOnlyComposite()
+    public void TheSweeps_AreTheOnlyComposites()
     {
         var composites = StepRegistry.All.Where(s => s is IStepExpander).Select(s => s.Type);
 
-        Assert.That(composites, Is.EquivalentTo(new[] { StepArgs.TimelapseType }));
+        Assert.That(composites, Is.EquivalentTo(new[] { StepArgs.TimelapseType, StepArgs.TickLapseType }));
     }
 
     // SetWeather is the worked example CONTRIBUTING.md points at, so its offline validation is what a
