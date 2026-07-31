@@ -1422,12 +1422,17 @@ report_rc=$?
 set -e
 
 # ---------------------------------------------------------------------------
-# Step 8: stitch Timelapse frame sequences into videos
+# Step 8: stitch Timelapse / TickLapse frame sequences into videos
 # ---------------------------------------------------------------------------
 # A Timelapse step is desugared (Shared/TimelapseExpander.cs) into one SetTime/Wait/Screenshot
 # triple per frame, so by the time the run finishes the reports folder holds a numbered PNG
 # sequence and nothing else. Turning that into a video is a pure post-processing step, which is why
 # it lives out here rather than in the mod: no Unity encoder, no extra in-game dependency.
+#
+# TickLapse (Shared/TickLapseExpander.cs) is a different sweep — ticks per frame instead of hours —
+# but it deliberately emits the SAME numbered-PNG sequence, so from here down the two are one case.
+# Only the step name and its per-step defaults differ, which is why they are read together below
+# rather than given a second stitching path to drift from this one.
 #
 # Deliberately runs BEFORE the pass/fail gate below — a scenario whose probe failed is exactly when
 # you most want to watch what the lighting actually did.
@@ -1476,10 +1481,15 @@ qualified_prefix() {
 
 stitch_scenario_timelapses() {
     local scenario="$1" declared scenario_name prefix fps
-    # Default fps here must match TimelapseExpander.DefaultFps; the expander validates the value,
-    # this only consumes it (fps affects playback rate, not what gets captured).
-    declared="$(jq -r '.steps[]? | select(.type == "Timelapse")
-                       | [(.args.fileNamePrefix // "timelapse"), (.args.fps // "12")] | @tsv' "$scenario")"
+    # Default prefix/fps per step type must match TimelapseExpander's and TickLapseExpander's own
+    # defaults; the expanders validate the values, this only consumes them (fps affects playback
+    # rate, not what gets captured). The two differ on purpose: an hour sweep is a slide show of a
+    # day, a tick sweep is continuous motion, so they do not want the same playback rate.
+    declared="$(jq -r '.steps[]? | select(.type == "Timelapse" or .type == "TickLapse")
+                       | if .type == "Timelapse"
+                         then [(.args.fileNamePrefix // "timelapse"), (.args.fps // "12")]
+                         else [(.args.fileNamePrefix // "ticklapse"), (.args.fps // "20")]
+                         end | @tsv' "$scenario")"
     [[ -z "$declared" ]] && return 0
 
     scenario_name="$(jq -r '.name' "$scenario")"
@@ -1497,7 +1507,7 @@ stitch_scenario_timelapses() {
 stitch_timelapses() {
     local any=0 scenario
     for scenario in "${SCENARIOS[@]}"; do
-        jq -e '.steps[]? | select(.type == "Timelapse")' "$scenario" >/dev/null 2>&1 && any=1
+        jq -e '.steps[]? | select(.type == "Timelapse" or .type == "TickLapse")' "$scenario" >/dev/null 2>&1 && any=1
     done
     (( any )) || return 0
 

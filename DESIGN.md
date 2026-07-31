@@ -165,7 +165,7 @@ checks the pairing at startup and logs which half is absent, because "validates 
 otherwise painful to diagnose from a report.
 
 Composites are the one legitimate spec-without-action: a step that also implements `IStepExpander`
-desugars at load and never reaches the executor. `Timelapse` is the built-in case.
+desugars at load and never reaches the executor. `Timelapse` and `TickLapse` are the built-in cases.
 
 ### Why reflection rather than a Register() call
 
@@ -598,7 +598,7 @@ Four real runs on this box, each checked by md5 on both sides rather than by rea
 
 ## Timelapse: video as a clock sweep, not a screen recording
 
-A `Timelapse` step produces a video of the map over a span of hours. It is the only composite step:
+A `Timelapse` step produces a video of the map over a span of hours. It is a composite step:
 `Shared/TimelapseExpander.cs` desugars it at load time into one `SetTime` → `Wait` → `Screenshot`
 triple per frame, and `Runner/run_test.sh` stitches the resulting PNG sequence with ffmpeg after the
 run. Nothing new touches the game — `StepExecutor` and `ScenarioDriver` are unchanged, and the whole
@@ -629,6 +629,30 @@ come back green having silently skipped an entire sweep.
 `settleFrames` (default 2) exists because a clock jump doesn't necessarily update the glow grid and
 shadow direction within the same frame, and a capture taken too eagerly would record stale lighting.
 The default is a reasoned guess, not a measured one — it wants confirming against a real run.
+
+### TickLapse: the same output, swept in ticks
+
+`Timelapse` films **the hours changing**. That covers everything whose look is a function of the time
+of day, and it is the wrong instrument for an effect that animates on the tick counter — an aurora
+curtain, a weather panner, anything with its own motion. Those want the opposite framing: the sun,
+the weather and the shadows held still while one thing moves.
+
+`TickLapse` is that sweep. Same numbered-PNG output, same ffmpeg stitch, same left-in-place-on-error
+behaviour; the only difference is that each frame advances the clock by `ticks` rather than by hours,
+so the whole clip fits inside a single lighting moment. It is not `Timelapse` at a finer setting:
+a watchable interval for a drifting aurora is ~10 ticks, which as `stepHours` is `0.004` — a number
+that is a transcription exercise to write, tells a reader nothing about the result, and only
+round-trips exactly because 2500 ticks/hour happens to divide evenly.
+
+The frames are produced by a new `AdvanceTicks` primitive, and NOT by the existing `FastForward`,
+which is the subtler half of the design. `FastForward` raises the game to `Superfast`, waits for a
+tick target, and never pauses again — so ticks keep elapsing through the settle frames and the
+screenshot flush that follow it. The gap between two captures would then be the requested ticks plus
+however many the PNG write happened to cost, a different number every frame, and the clip judders in
+a way that reads as the effect stuttering rather than as the camera being uneven. `AdvanceTicks` is a
+`DebugSetTicksGame` jump like `AdvanceTime`, so the interval is exact and the frames are evenly
+spaced. The cost of a jump is that nothing lives through it — no pawn walks, no fire spreads — which
+for this purpose is the feature, not the price.
 
 ## Screenshots hide the UI by default
 
