@@ -29,6 +29,7 @@ public class StepRegistryTests
             StepArgs.LookAtType,
             StepArgs.SpawnPawnType, StepArgs.TimelapseType, StepArgs.TickLapseType,
             "SetWeather", "SetBiome", "SetSnow",
+            SetTilePropertiesStep.StepType,
             "Assert",
             LandInOrbitStep.StepType,
         };

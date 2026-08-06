@@ -72,8 +72,21 @@ public enum ScenarioResidue
     // success.
     NewMap = 1 << 10,
 
+    // Scalar fields on the map's world Tile — elevation, pollution, rainfall — overwritten by
+    // SetTileProperties. Not soft-resettable, and unlike Latitude this is not a harness-side override
+    // that can simply be cleared: these are real mutable fields on the live Tile, so the step writes
+    // through to world state that persists for the rest of the process.
+    //
+    // Kept apart from Biome even though both edit the same Tile object, because the blast radius is
+    // different in kind. A biome change cascades into temperature, plant/animal density, ambient
+    // sound and cached world-map graphics; these three are read directly by whatever asks for them
+    // and cascade nowhere. Sharing Biome's flag would have been safe but would overstate what
+    // happened, and a reader comparing two scenarios' residues deserves to see which one moved the
+    // biome.
+    TileProperties = 1 << 11,
+
     All = Clock | Latitude | FeatureFlags | TimeSpeed | Camera | ScreenshotMode | Map |
-          GameConditions | Weather | Biome | NewMap,
+          GameConditions | Weather | Biome | NewMap | TileProperties,
 }
 
 // Pure classification of a step list's residue. Kept in Shared with no game types so the whole
