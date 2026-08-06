@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using RimWorldTestHarness.Mod.Profiling;
 using RimWorldTestHarness.Mod.Steps;
 using RimWorldTestHarness.Shared;
 using UnityEngine;
@@ -132,6 +133,10 @@ public static class ScenarioDriver
         _settleFramesAfterLoad = PostLoadSettleFrames;
         _scenarioIndex = 0;
         _stepIndex = 0;
+        // Harvested profile tables are per scenario (see ProfileResults). Cleared here as well as at
+        // each scenario boundary so a second run in one process — which the live channel makes
+        // possible — cannot start with the previous run's tables still answering to their names.
+        ProfileResults.Clear();
     }
 
     // Called every frame from Patch_DriveScenario.
@@ -339,6 +344,12 @@ public static class ScenarioDriver
             CurrentReport.ProbeChecks.Add(ReportComparer.CheckProbe(probeName, actual, expected, tolerance));
         }
 
+        if (outcome.ProbeCheck is ProbeCheckResult check)
+            CurrentReport.ProbeChecks.Add(check);
+
+        if (outcome.ProfileTable is ProfileTable profile)
+            CurrentReport.Profiles.Add(profile);
+
         if (outcome.ScreenshotPath != null)
         {
             CurrentReport.ScreenshotPaths.Add(outcome.ScreenshotPath);
@@ -408,6 +419,9 @@ public static class ScenarioDriver
         // Per scenario, so one scenario's warnings never show up in the next one's review packet. A
         // reload re-marks it again via AdvanceWaitingForMap; marking twice is harmless.
         StepHelpers.MarkLogBaseline();
+        // Same argument for profile tables: a ProfileAssert in this scenario naming a table the
+        // PREVIOUS one recorded would pass while measuring the wrong run entirely.
+        ProfileResults.Clear();
 
         IsolationAction action = _plan.Entries[_scenarioIndex].Before;
         Log.Message($"RWTH: starting scenario {_scenarioIndex + 1}/{_specs.Count} " +

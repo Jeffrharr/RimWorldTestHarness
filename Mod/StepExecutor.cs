@@ -20,6 +20,11 @@ public sealed class StepOutcome
     public float? ProbeValue;       // Probe: the raw reading (caller decides how to interpret it)
     public string? ScreenshotPath;  // Screenshot: absolute path the PNG is being written to
     public VisionAssert? VisionAssert;  // Assert(kind=vision): the rubric+evidence packet to record
+    public ProfileTable? ProfileTable;  // ProfileStop: the harvested per-patch cost table
+    // ProfileAssert: a check the step already decided. Distinct from ProbeValue, which is a raw
+    // reading the DRIVER compares against the step's own expected/tolerance args — a profile bound is
+    // one-sided as often as not, and re-deriving it in the driver would put the grammar in two places.
+    public ProbeCheckResult? ProbeCheck;
     public string? Error;           // non-null => the action failed; nothing else is meaningful
 
     // Non-null => this install cannot run the scenario at all and the rest of it should be abandoned
