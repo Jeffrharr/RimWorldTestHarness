@@ -156,6 +156,24 @@ public class DubsAnalyzerApiTests
         });
     }
 
+    // Where the built-in entries actually live. Pinned because looking in the wrong collection cost a
+    // live run: the static Entry.entries list holds only entries created at runtime by AddEntry, while
+    // the [Entry]-attributed built-ins go straight into Tab.entries. Searching Entry.entries found
+    // nothing and reported the analyzer's API as changed.
+    [Test]
+    public void GUIController_TabsExposeTheirEntryDictionary()
+    {
+        TypeDefinition controller = Require("Analyzer.Profiling.GUIController");
+        TypeDefinition tab = Require("Analyzer.Profiling.Tab");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(controller.Properties.Any(p => p.Name == "Tabs"), Is.True,
+                        "GUIController.Tabs is gone — DubsAnalyzer walks it to find the Harmony-patches entry");
+            AssertField(tab, "entries");
+        });
+    }
+
     [Test]
     public void Entry_ExposesTheFieldsWeMatchAndActivateOn()
     {

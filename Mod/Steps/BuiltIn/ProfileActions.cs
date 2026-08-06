@@ -81,11 +81,12 @@ public sealed class ProfileMeasureAction : IStepAction
         if (!DubsAnalyzer.IsLoaded)
             return StepOutcome.Skip(DubsAnalyzer.NotLoadedReason);
 
-        string? error = DubsAnalyzer.BeginWindow();
+        int frames = ProfileStartAction.ReadInt(args, StepArgs.ProfileFrames, 0);
+
+        string? error = DubsAnalyzer.BeginWindow(frames);
         if (error != null)
             return StepOutcome.Fail(error);
 
-        int frames = ProfileStartAction.ReadInt(args, StepArgs.ProfileFrames, 0);
         Log.Message($"RWTH: profiling window open ({(frames > 0 ? frames + " frames" : "until ProfileStop")})");
         return new StepOutcome { WaitFrames = frames };
     }
@@ -114,10 +115,7 @@ public sealed class ProfileStopAction : IStepAction
 
         ProfileTable table = ProfileMath.Build(
             name, ProfileExpander.DefaultEntry, prefix,
-            // Requested frames are not knowable from here — ProfileMeasure held them — so the measured
-            // count stands in. The two differ only when the analyzer lost frames to a long event, and
-            // that case is already visible as MeasuredFrames being lower than the scenario's `frames`.
-            harvest.MeasuredFrames, harvest.MeasuredFrames, harvest.FrameMs, harvest.Samples);
+            harvest.RequestedFrames, harvest.MeasuredFrames, harvest.FrameMs, harvest.Samples);
 
         // A filter that matched nothing is an ERROR, not an empty table. An empty table is
         // indistinguishable from "this mod costs nothing", and the overwhelmingly likely cause is a
