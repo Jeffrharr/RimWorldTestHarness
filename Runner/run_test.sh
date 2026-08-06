@@ -75,6 +75,14 @@
 #   --without-dlc <id>     leave an installed DLC out of the run's ModsConfig (e.g.
 #                          ludeon.rimworld.odyssey). Repeatable. For exercising a scenario's
 #                          skip-without-the-DLC path on a machine that owns the DLC.
+#   --profiler             activate Dubs Performance Analyzer (Workshop 2038874626) for this run, so
+#                          Profile steps have something to measure with. OFF BY DEFAULT AND MEANT TO
+#                          STAY THAT WAY: the analyzer rewrites the body of every Harmony-patched
+#                          method in the load, so every timing number in a run that has it loaded —
+#                          including ordinary probes that have nothing to do with profiling — is a
+#                          number measured through an instrumented build. Use it for the run that
+#                          answers a performance question, never for the pinned runs you compare
+#                          against. Fails if the analyzer is not installed.
 #   --print-config         print the resolved paths for this run and exit without touching anything
 #
 # A suite list file is one scenario path per line; '#' starts a whole-line comment, and relative
@@ -114,6 +122,10 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 RIMWORLD="/home/deck/.local/share/Steam/steamapps/common/RimWorld"
 MODS_DIR="$RIMWORLD/Mods"
+
+# Where Steam puts subscribed RimWorld mods. Only consulted by --profiler, which is the one flag that
+# names a specific Workshop mod rather than taking a folder from the caller.
+WORKSHOP_DIR="${RWTH_WORKSHOP_DIR:-$RIMWORLD/../../workshop/content/294100}"
 
 # Per-run scratch. Every mutable file this run owns hangs off here. The old fixed /tmp names
 # (/tmp/ModsConfig_rwth.bak.xml etc.) were a correctness bug even without deliberate parallelism: two
@@ -204,6 +216,14 @@ ISOLATION="auto"
 PRINT_CONFIG=0
 RECOVER_ONLY=0
 
+# --profiler: put Dubs Performance Analyzer in this run's ModsConfig. Deliberately a flag of its own
+# rather than "just pass it as --mod", for two reasons. It is a Workshop mod with no folder the caller
+# would know the path of, and — the important one — it needs to load EARLY: it patches the Harmony
+# constructor to record which mod owns which patch, so any mod that builds its Harmony instance before
+# the analyzer loads ends up with its patches attributed to nobody. A --mod would land after the
+# required mods, which is too late.
+PROFILER=0
+
 # Build outputs to install over an existing installation for the life of the run, as "src:dest"
 # directory pairs. --mod-overlay resolves to entries here once packageIds are known (see
 # resolve_mod_overlays); --install is the same thing with both paths spelled out.
@@ -237,7 +257,7 @@ usage() {
     echo "[run_test]        [--mod <mod-folder>]... [--no-teardown] [--delete-frames]" >&2
     echo "[run_test]        [--isolation=auto|always|never] [--without-dlc <packageId>]..." >&2
     echo "[run_test]        [--mod-overlay <worktree>]... [--install <src-dir>:<dest-dir>]..." >&2
-    echo "[run_test]        [--print-config] [--recover-only]" >&2
+    echo "[run_test]        [--profiler] [--print-config] [--recover-only]" >&2
     exit 2
 }
 
@@ -258,6 +278,7 @@ while (( $# )); do
         --mod-overlay=*) MOD_OVERLAY_DIRS+=("${1#--mod-overlay=}") ;;
         --install) shift; INSTALL_PAIRS+=("${1:-}") ;;
         --install=*) INSTALL_PAIRS+=("${1#--install=}") ;;
+        --profiler) PROFILER=1 ;;
         --recover-only) RECOVER_ONLY=1 ;;
         -*) echo "[run_test] unknown flag: $1" >&2; usage ;;
         *) SCENARIOS+=("$1") ;;
@@ -387,6 +408,46 @@ for overlay_arg in ${MOD_OVERLAY_DIRS[@]+"${MOD_OVERLAY_DIRS[@]}"}; do
     MOD_OVERLAY_TARGETS+=("$overlay_target")
     log "--mod-overlay: $overlay_id — $overlay_src -> $overlay_dest"
 done
+
+# --profiler: resolve Dubs Performance Analyzer's packageId from whatever copy is installed, rather
+# than hardcoding it. The id in its About.xml is "Dubwise.DubsPerformanceAnalyzer.steam" (yes, with a
+# literal ".steam"), and RimWorld additionally appends "_steam" to a Workshop mod only when a LOCAL
+# copy of the same id also exists — so hardcoding one spelling would silently produce a ModsConfig
+# entry naming no installed mod, and RimWorld would boot without the analyzer while the run's Profile
+# steps reported "not loaded". Reading the id off the folder we found cannot drift.
+#
+# Prefers a local Mods/ copy: when both exist, RimWorld is the one that renames the WORKSHOP copy, so
+# the local folder's id is the one that stays as written.
+PROFILER_MOD_ID=""
+resolve_profiler_mod() {
+    local candidate resolved id
+    local matches=()
+    for candidate in "$MODS_DIR"/*/ "$WORKSHOP_DIR"/*/; do
+        candidate="${candidate%/}"
+        if [[ -f "$candidate/About/About.xml" ]]; then
+            id="$(read_package_id "$candidate" 2>/dev/null)" || id=""
+            if [[ "$id" == dubwise.dubsperformanceanalyzer* ]]; then
+                resolved="$(readlink -f "$candidate")"
+                matches+=("$id|$resolved")
+            fi
+        fi
+    done
+    if (( ${#matches[@]} == 0 )); then
+        fail "--profiler: Dubs Performance Analyzer is not installed. Subscribe to Workshop item 2038874626 (or drop a copy in $MODS_DIR), or drop the flag."
+    fi
+    # First match wins here, unlike --mod-overlay's hard failure on ambiguity, because the two copies
+    # of this mod are the SAME mod and either one profiles identically — there is no wrong choice to
+    # protect against, and MODS_DIR is scanned first so the local copy is the one taken.
+    PROFILER_MOD_ID="${matches[0]%%|*}"
+    log "--profiler: Dubs Performance Analyzer '$PROFILER_MOD_ID' (${matches[0]#*|})"
+    log "--profiler: WARNING — the analyzer instruments every Harmony patch in this load. Timings from"
+    log "--profiler:           this run, probes included, are measured through an instrumented build"
+    log "--profiler:           and are not comparable with a run that did not pass --profiler."
+}
+
+if [[ $PROFILER -eq 1 ]]; then
+    resolve_profiler_mod
+fi
 
 # Validate every install pair (both forms land here) before anything is locked or touched. The ':'
 # split is why neither path may contain one; saying so now beats a confusing "no such directory".
@@ -987,7 +1048,7 @@ EXCLUDED_DLC_JSON="$(printf '%s\n' ${EXCLUDED_DLC[@]+"${EXCLUDED_DLC[@]}"} | pyt
     'import json,sys; print(json.dumps([l for l in sys.stdin.read().split("\n") if l]))')"
 RIMWORLD="$RIMWORLD" REQUIRED_MODS_JSON="$REQUIRED_MODS_JSON" \
     MOD_UT_IDS_JSON="$MOD_UT_IDS_JSON" MOD_UT_AFTER_HARNESS_JSON="$MOD_UT_AFTER_HARNESS_JSON" \
-    EXCLUDED_DLC_JSON="$EXCLUDED_DLC_JSON" \
+    EXCLUDED_DLC_JSON="$EXCLUDED_DLC_JSON" PROFILER_MOD_ID="$PROFILER_MOD_ID" \
 python3 - "$MODSCONFIG" <<'PYEOF'
 import json, os, re, sys
 
@@ -1033,8 +1094,15 @@ after_harness = set(json.loads(os.environ.get("MOD_UT_AFTER_HARNESS_JSON", "[]")
 # scenario then fails with "No probe registered named ...", pointing nowhere near the real cause.
 # Note this is not in tension with the paragraph above — assembly LOAD order and Harmony PATCH order
 # are different things, and a bridge registers probes rather than patching anything.
+# --profiler goes immediately after Harmony and before everything else. The analyzer patches the
+# Harmony CONSTRUCTOR to record which mod id owns which patch (Analyzer.Profiling.RememberHarmonyIDs),
+# so any mod that constructs its Harmony instance before the analyzer loads has its patches attributed
+# to nobody — the per-mod table this whole feature produces would come back missing exactly the rows
+# the run was launched to look at. Empty string when --profiler was not passed, and filtered out below.
+profiler = [p for p in [os.environ.get("PROFILER_MOD_ID", "")] if p]
+
 active = []
-for pid in (["ludeon.rimworld"] + dlc_ids + ["brrainz.harmony"] + required +
+for pid in (["ludeon.rimworld"] + dlc_ids + ["brrainz.harmony"] + profiler + required +
             [p for p in mods_under_test if p not in after_harness] +
             ["joof.rimworldtestharness"] +
             [p for p in mods_under_test if p in after_harness]):
