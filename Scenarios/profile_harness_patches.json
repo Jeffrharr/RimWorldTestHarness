@@ -1,0 +1,30 @@
+{
+  "Name": "profile_harness_patches",
+  "RequiredMods": {},
+  "Steps": [
+    { "type": "SetTime", "args": { "hour": "12" } },
+
+    { "type": "Profile",
+      "args": {
+        "name": "harness",
+        "prefix": "RimWorldTestHarness",
+        "frames": "300"
+      } },
+
+    { "type": "ProfileAssert",
+      "args": {
+        "table": "harness",
+        "label": "*",
+        "metric": "callsPerFrame",
+        "min": "1"
+      } },
+
+    { "type": "ProfileAssert",
+      "args": {
+        "table": "harness",
+        "label": "*",
+        "metric": "avgMsPerFrame",
+        "max": "2"
+      } }
+  ]
+}
