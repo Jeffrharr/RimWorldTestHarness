@@ -32,6 +32,8 @@ public class StepRegistryTests
             SetTilePropertiesStep.StepType,
             "Assert",
             LandInOrbitStep.StepType,
+            StepArgs.ProfileType, StepArgs.ProfileStartType, StepArgs.ProfileMeasureType,
+            StepArgs.ProfileStopType, StepArgs.ProfileAssertType,
         };
 
         Assert.That(StepRegistry.KnownTypes, Is.EquivalentTo(expected));
@@ -113,14 +115,17 @@ public class StepRegistryTests
     }
 
     // Composites are the one legitimate reason for a spec to have no executing half, so the
-    // spec/action consistency check has to know the difference. The two sweeps are the built-in
-    // cases; anything else appearing here is a step that lost its action.
+    // spec/action consistency check has to know the difference. The two sweeps and Profile are the
+    // built-in cases; anything else appearing here is a step that lost its action.
     [Test]
-    public void TheSweeps_AreTheOnlyComposites()
+    public void TheSweepsAndProfile_AreTheOnlyComposites()
     {
         var composites = StepRegistry.All.Where(s => s is IStepExpander).Select(s => s.Type);
 
-        Assert.That(composites, Is.EquivalentTo(new[] { StepArgs.TimelapseType, StepArgs.TickLapseType }));
+        Assert.That(composites, Is.EquivalentTo(new[]
+        {
+            StepArgs.TimelapseType, StepArgs.TickLapseType, StepArgs.ProfileType,
+        }));
     }
 
     // SetWeather is the worked example CONTRIBUTING.md points at, so its offline validation is what a

@@ -2,6 +2,20 @@ using System.Collections.Generic;
 
 namespace RimWorldTestHarness.Shared;
 
+// How a ProbeCheckResult's actual was compared to its expected. Strings rather than an enum because
+// this travels through System.Text.Json into a report that run_test.sh's inline Python reads, and an
+// enum would arrive there as an integer nobody can interpret without this file open.
+public static class ProbeComparison
+{
+    // |actual - expected| <= tolerance. What every Probe step has always done, and the default for a
+    // record written without a comparison — which is what keeps reports produced before ProfileAssert
+    // existed readable by the same code.
+    public const string Within = "within";
+
+    public const string AtMost = "atMost";
+    public const string AtLeast = "atLeast";
+}
+
 public sealed class ProbeCheckResult
 {
     public string ProbeName { get; set; } = "";
@@ -9,6 +23,12 @@ public sealed class ProbeCheckResult
     public float ExpectedValue { get; set; }
     public float Tolerance { get; set; }
     public bool Pass { get; set; }
+
+    // One of ProbeComparison.*. Added for ProfileAssert, whose bounds are one-sided far more often
+    // than they are two-sided: "this patch must cost at most 1 ms/frame" is the assertion people
+    // actually want, and expressing it as expected±tolerance loses which end was being defended the
+    // moment anyone reads the report back.
+    public string Comparison { get; set; } = ProbeComparison.Within;
 }
 
 // Written by the Mod at the end of a scenario run, read by Runner/run_test.sh (exit-code gate)
@@ -26,6 +46,12 @@ public sealed class ScenarioReport
     // confident FAIL affects Pass (see VisionGate); an unjudged one leaves the run provisionally
     // green, which is why the runner prints the pending count rather than rounding it off.
     public List<VisionAssert> VisionAsserts { get; set; } = new();
+
+    // Per-patch cost tables harvested by Profile/ProfileStop steps. Informational on their own — only
+    // a ProfileAssert step turns one of these numbers into something that gates Pass — because the
+    // primary use is diffing the same table between two builds, and a run that went red merely because
+    // the machine was busy would train everyone to ignore the colour.
+    public List<ProfileTable> Profiles { get; set; } = new();
 
     // Set when a step declared the scenario inapplicable to this install rather than failed — today
     // only LandInOrbit without Odyssey. The remaining steps are abandoned and Pass is computed as

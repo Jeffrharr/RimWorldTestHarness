@@ -85,8 +85,20 @@ public enum ScenarioResidue
     // biome.
     TileProperties = 1 << 11,
 
+    // Dubs Performance Analyzer was activated and has TRANSPLANTED timing calls into the body of every
+    // Harmony-patched method in the load (Analyzer.Profiling.MethodTransplanting). Nothing puts those
+    // bodies back short of the analyzer's own Harmony.UnpatchAll, which runs asynchronously and calls
+    // GC.Collect — not something to do to a live run between scenarios.
+    //
+    // This is the residue with the least visible symptom and the worst consequence: the world looks
+    // untouched, and every subsequent timing probe in the load is measuring rewritten methods. A
+    // performance scenario that quietly made the NEXT scenario's numbers 20% worse is exactly the
+    // silent cross-contamination the reload-required set exists for, so profiling is deliberately not
+    // soft-resettable and a Profile step therefore costs a save reload before whatever follows it.
+    Profiler = 1 << 12,
+
     All = Clock | Latitude | FeatureFlags | TimeSpeed | Camera | ScreenshotMode | Map |
-          GameConditions | Weather | Biome | NewMap | TileProperties,
+          GameConditions | Weather | Biome | NewMap | TileProperties | Profiler,
 }
 
 // Pure classification of a step list's residue. Kept in Shared with no game types so the whole
@@ -144,6 +156,7 @@ public static class ScenarioResidueAnalyzer
         AddIfSet(parts, residue, ScenarioResidue.Map, "map");
         AddIfSet(parts, residue, ScenarioResidue.GameConditions, "game conditions");
         AddIfSet(parts, residue, ScenarioResidue.Weather, "weather");
+        AddIfSet(parts, residue, ScenarioResidue.Profiler, "an active profiler");
         AddIfSet(parts, residue, ScenarioResidue.Clock, "clock");
         AddIfSet(parts, residue, ScenarioResidue.Latitude, "latitude");
         AddIfSet(parts, residue, ScenarioResidue.FeatureFlags, "feature flags");

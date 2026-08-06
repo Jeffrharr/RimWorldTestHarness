@@ -160,6 +160,59 @@ public static class StepArgs
     public const string TimelapseSettleFrames = "settleFrames";   // int >= 0, default 2
     public const string TimelapseFps = "fps";                     // int 1..60, default 12
 
+    // Profiling under Dubs Performance Analyzer. Profile is the third COMPOSITE: it desugars at load
+    // time into ProfileStart / ProfileMeasure / ProfileStop, which are also usable individually when
+    // the window should be "whatever these other steps do" rather than a fixed number of frames.
+    // See ProfileExpander for the desugaring and Mod/Profiling/DubsAnalyzer.cs for the adapter.
+    public const string ProfileType = "Profile";
+    public const string ProfileStartType = "ProfileStart";
+    public const string ProfileMeasureType = "ProfileMeasure";
+    public const string ProfileStopType = "ProfileStop";
+
+    // Names the harvested table in the report, and the handle a ProfileAssert step refers to. Required:
+    // an unnamed table cannot be asserted on, and a scenario that profiled and never asserted is the
+    // green-run-means-less failure in miniature.
+    public const string ProfileName = "name";
+
+    // Label prefix rows are filtered to, matched against the analyzer's "Namespace.Type:Method" key —
+    // in practice a mod's root namespace. Required, and required to be non-empty: unfiltered means
+    // every profiled method in the load, which is thousands of rows of vanilla in the report.
+    public const string ProfilePrefix = "prefix";
+
+    // Rendered frames to measure. The analyzer records one sample per Root_Play.Update, so this is
+    // frames, not ticks and not seconds.
+    public const string ProfileFrames = "frames";
+
+    // Frames to burn between activating the profiler and zeroing its counters. Not politeness: the
+    // analyzer TRANSPLANTS timing calls into every profiled method, so the first invocation of each
+    // one pays JIT for the rewritten body. Measuring from frame zero attributes that one-off cost to
+    // whichever patch happened to run first.
+    public const string ProfileWarmupFrames = "warmupFrames";
+
+    // Which analyzer entry to profile. Only "harmony" (every non-analyzer Harmony patch in the load)
+    // is implemented; spelled as an arg so adding "tick" or "gui" later needs no new step type.
+    public const string ProfileEntry = "entry";
+
+    // Game speed to hold during the window. Defaults to "normal" rather than leaving whatever the
+    // scenario had, because a scenario that jumped the clock leaves the game PAUSED, and profiling a
+    // paused colony measures a load of tick-driven patches that never fire — a table of zeroes that
+    // reads as "this mod is free".
+    public const string ProfileTimeSpeed = "timeSpeed"; // paused | normal | fast | superfast | ultrafast
+
+    // Asserts one number out of a harvested table, folding into the same ProbeChecks gate an ordinary
+    // Probe step uses.
+    public const string ProfileAssertType = "ProfileAssert";
+    public const string ProfileAssertTable = "table";   // a ProfileStop/Profile step's `name`
+    public const string ProfileAssertLabel = "label";   // exact or unique-substring row label; "*" = table totals
+    public const string ProfileAssertMetric = "metric"; // see ProfileMetrics.Known
+    // Exactly one bound form must be given: expectedValue+tolerance (two-sided, the Probe step's
+    // shape), or max, or min. Performance assertions are usually one-sided — "this must not exceed" —
+    // and forcing them through expected±tolerance is how a useful gate ends up unwritten.
+    public const string ProfileAssertExpectedValue = "expectedValue";
+    public const string ProfileAssertTolerance = "tolerance";
+    public const string ProfileAssertMax = "max";
+    public const string ProfileAssertMin = "min";
+
     // TickLapse is Timelapse's short-interval sibling: same numbered-PNG-sequence output and the
     // same stitching downstream, but each frame steps the clock by TICKS rather than hours, so it
     // films an effect that animates on the tick counter instead of on the hour of day. See
