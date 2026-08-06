@@ -91,7 +91,8 @@ public static class ProfileMath
     // one definition.
     //
     // Ordinal, case-sensitive, and anchored at the start, because the analyzer's label is
-    // "Namespace.Type:Method" and a mod's root namespace is exactly the prefix an author would write.
+    // "Namespace.Type:Method(params)" and a mod's root namespace is exactly the prefix an author would
+    // write. The parameter list is why a row is usually named by a unique FRAGMENT rather than in full.
     // Case-insensitive matching would let "celestiallighting" quietly work here and fail nowhere else,
     // which is how a scenario ends up depending on a spelling it never verified.
     public static bool MatchesPrefix(string? label, string? prefix) =>

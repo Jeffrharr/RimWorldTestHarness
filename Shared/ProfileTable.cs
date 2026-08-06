@@ -17,7 +17,7 @@ namespace RimWorldTestHarness.Shared;
 // the number to change shape.
 public struct ProfileSample
 {
-    // The analyzer's own key for the profiled method: "Namespace.Type:MethodName" (see
+    // The analyzer's own key for the profiled method: "Namespace.Type:Method(params)" (see
     // Analyzer.Profiling.Utility.GetSignature). For the Harmony-patches entry the type is the PATCH's
     // declaring type, which is what makes a `prefix` of the mod's root namespace a usable filter.
     public string Label;
