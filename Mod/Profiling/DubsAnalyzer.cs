@@ -64,6 +64,7 @@ internal static class DubsAnalyzer
         public static readonly Type? ProfileController = AccessTools.TypeByName("Analyzer.Profiling.ProfileController");
         public static readonly Type? GUIController = AccessTools.TypeByName("Analyzer.Profiling.GUIController");
         public static readonly Type? Entry = AccessTools.TypeByName("Analyzer.Profiling.Entry");
+        public static readonly Type? Tab = AccessTools.TypeByName("Analyzer.Profiling.Tab");
         public static readonly Type? Profiler = AccessTools.TypeByName("Analyzer.Profiling.Profiler");
         public static readonly Type? Window = AccessTools.TypeByName("Analyzer.Window_Analyzer");
         public static readonly Type? Modbase = AccessTools.TypeByName("Analyzer.Modbase");
@@ -101,7 +102,15 @@ internal static class DubsAnalyzer
     // from Start because the analyzer transplants timing calls into method bodies, so the first
     // invocation of each profiled method pays JIT for the rewritten IL — measuring from frame zero
     // charges that one-off cost to whichever patch happened to run first.
-    public static string? BeginWindow()
+    //
+    // `requestedFrames` is carried through to the harvest purely so the report can say how long the
+    // window was ASKED to be next to how long it turned out to be. They diverge when frames elapsed
+    // inside a long event, which the analyzer still measures but the driver's idle counter does not
+    // tick down through — and since every mean in the table is divided by the second number, a reader
+    // comparing two runs needs to be able to see the divisor moved.
+    private static int _requestedFrames;
+
+    public static string? BeginWindow(int requestedFrames)
     {
         if (!IsLoaded)
             return NotLoadedReason;
@@ -109,6 +118,7 @@ internal static class DubsAnalyzer
         try
         {
             AccessTools.Method(Lazy.GUIController, "ResetProfilers").Invoke(null, null);
+            _requestedFrames = requestedFrames;
             return null;
         }
         catch (Exception ex)
@@ -120,6 +130,10 @@ internal static class DubsAnalyzer
     public sealed class Harvest
     {
         public List<ProfileSample> Samples = new List<ProfileSample>();
+
+        // What ProfileMeasure asked for. Zero when the window was bounded by the steps that followed
+        // rather than by a frame count, which the report shows as "requested 0, measured N".
+        public int RequestedFrames;
         public int MeasuredFrames;
         public double FrameMs;
         public string? Error;
@@ -172,6 +186,7 @@ internal static class DubsAnalyzer
 
         Harvest harvest = new Harvest
         {
+            RequestedFrames = _requestedFrames,
             MeasuredFrames = measuredFrames,
             FrameMs = Finite(Convert.ToDouble(AccessTools.Field(Lazy.ProfileController, "updateAverage").GetValue(null))),
         };
@@ -319,15 +334,30 @@ internal static class DubsAnalyzer
 
     // Found by the entry's backing TYPE rather than its name, because the name is run through
     // RimWorld's translation system ("entry.update.harmonypatches".Tr()) and would differ per language.
+    //
+    // Searched through GUIController's TABS rather than the static Entry.entries list, which cost a
+    // live run to learn: Entry.entries only holds entries created at runtime by GUIController.AddEntry
+    // (the modder tab's custom ones). The built-in entries are [Entry]-ATTRIBUTED types, and
+    // Window_Analyzer.LoadEntries puts those straight into Tab.entries without ever touching
+    // Entry.entries. Searching the wrong collection found nothing and reported the analyzer's API as
+    // changed.
+    //
+    // Taking the Entry INSTANCE out of the tab dictionary also matters: RimWorld's attribute lookup
+    // hands back a fresh object per call, and the instance the tab holds is the one SwapToEntry
+    // activates and the one whose isPatched flag means anything.
     private static object? FindEntry(string typeName)
     {
-        FieldInfo entries = AccessTools.Field(Lazy.Entry, "entries");
         FieldInfo entryType = AccessTools.Field(Lazy.Entry, "type");
+        FieldInfo tabEntries = AccessTools.Field(Lazy.Tab, "entries");
+        object? tabs = AccessTools.PropertyGetter(Lazy.GUIController, "Tabs").Invoke(null, null);
 
-        foreach (object? entry in (IEnumerable)entries.GetValue(null))
+        foreach (object? tab in (IEnumerable)tabs!)
         {
-            if (entry != null && (entryType.GetValue(entry) as Type)?.Name == typeName)
-                return entry;
+            foreach (object? entry in ((IDictionary)tabEntries.GetValue(tab)).Keys)
+            {
+                if (entry != null && (entryType.GetValue(entry) as Type)?.Name == typeName)
+                    return entry;
+            }
         }
 
         return null;
