@@ -103,14 +103,27 @@ already-installed copy for the duration of the run, then puts the original back:
   /path/to/CelestialLighting/Tests/Scenarios/x.json
 ```
 
-- **All three flags are load-bearing.** `--mod-overlay` swaps an *activated* mod's assemblies; it
-  does not activate anything. Drop the first `--mod` and the overlay still resolves (it falls back to
-  `Mods/`) and still reports installing, but the mod never enters this run's `ModsConfig.xml`, so it
-  never loads and every probe it registers is simply absent. That reads as a build problem rather than
-  a missing flag; `--print-config` tells the two apart, because it prints one `MOD_UNDER_TEST=` line
-  per mod that will be activated next to the `INSTALL=` line the overlay resolved to. An overlay with
-  no matching `MOD_UNDER_TEST` is the shape of this mistake. The runner has both facts by the time it
-  writes `ModsConfig.xml` and could refuse the run outright; issue #27 tracks doing so.
+- **All three flags are load-bearing, and Step 3b enforces it.** `--mod-overlay` swaps an *activated*
+  mod's assemblies; it does not activate anything. Drop the first `--mod` and the overlay still
+  resolves (it falls back to `Mods/`) and still reports installing, but the mod never enters this run's
+  `ModsConfig.xml`, so it never loads and every probe it registers is simply absent. Step 3b compares
+  each overlay target's `packageId` against the modlist it has just written and stops the run there:
+
+  ```
+  [run_test] FAIL: --mod-overlay /path/to/worktree targets joof.celestiallighting, which is not
+                   activated for this run.
+  ```
+
+  It fails before the game boots and before any assembly is swapped, and it names the flag to add. The
+  check exists because the first thing that used to notice was the type-load gate at the *end* of the
+  run, which blamed build skew — specific, plausible and wrong (issue #27). A scenario that lists the
+  mod in its `requiredMods` satisfies Step 3b just as well as a `--mod` does; the assertion is about
+  what ends up active, not about which flag put it there.
+
+  `--print-config` still tells the two shapes apart *before* you start: it prints one `MOD_UNDER_TEST=`
+  line per mod that will be activated next to the `INSTALL=` line the overlay resolved to, and an
+  overlay with no matching `MOD_UNDER_TEST` is the mistake. (It resolves paths only, so it never
+  evaluates `requiredMods` — Step 3b is the authority.)
 - It resolves the destination itself, by matching the worktree's `packageId` against the `--mod`
   folders and then `Mods/` — `--print-config` shows the resolved `src -> dest` without launching.
 - Pass the worktree to `--mod-overlay` **only**, never also to `--mod`: that gives two mod folders
