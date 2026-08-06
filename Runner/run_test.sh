@@ -22,6 +22,9 @@
 #      About/About.xml) + joof.rimworldtestharness, which goes after them so its patches wrap
 #      theirs — except any --mod that itself depends on the harness (a probe bridge), which must
 #      load after it or its assembly cannot resolve IProbe.
+#   3b. Asserts every --mod-overlay target's packageId is in the list step 3 just wrote. An overlay
+#      swaps an activated mod's assemblies; it does not activate one, and the two are easy to
+#      confuse into a run that installs a build the game never loads.
 #   4. Copies the scenarios' Fixtures/<saveFile> to Saves/autostart.rws — RimWorld's own vanilla
 #      autostart mechanism (Root_Entry.Start -> SaveGameFilesUtility.GetAutostartSaveFile, gated
 #      on Prefs.DevMode which Patch_ForceDevMode forces true while a scenario is active) loads it
@@ -56,7 +59,11 @@
 #                          is how you live-test a git worktree: Mods/<Mod> is a permanent symlink to
 #                          the main checkout, so naming a worktree with --mod does not change which
 #                          DLL the game loads. Repeatable. Do NOT also pass the worktree as --mod —
-#                          that gives two mod folders sharing one packageId.
+#                          that gives two mod folders sharing one packageId. The INSTALLED copy does
+#                          still need its own --mod, because an overlay swaps an activated mod's
+#                          assemblies and never activates anything. The working shape is all three:
+#                            --mod <main-checkout> --mod <main-checkout>/TestMod --mod-overlay <worktree>
+#                          Step 3b refuses the run if an overlay target ends up unactivated.
 #   --install <src>:<dst>  lower-level form of the same thing: overlay directory <src> onto directory
 #                          <dst> for the run, then restore <dst> exactly. Repeatable. Neither path
 #                          may contain ':'.
@@ -343,6 +350,17 @@ resolve_overlay_target() {
     printf '%s' "${matches[0]}"
 }
 
+# What each --mod-overlay resolved to, kept in step by index: the folder as given, the packageId read
+# out of its About.xml, and the installed mod folder its build will be laid over. Recorded rather than
+# thrown away after INSTALL_PAIRS is built because Step 3b needs those packageIds to check against the
+# modlist — and by then nothing on disk still says which install pair came from an overlay.
+#
+# Only --mod-overlay fills these. A raw --install pair is deliberately outside the check: it is the
+# escape hatch for overlaying anything at all, so it carries no packageId to assert about.
+MOD_OVERLAY_ARGS=()
+MOD_OVERLAY_IDS=()
+MOD_OVERLAY_TARGETS=()
+
 # A worktree passed as BOTH --mod-overlay and --mod is the mistake the overlay flag exists to prevent:
 # two folders sharing one packageId, which RimWorld resolves by a rule nobody should have to know.
 for overlay_arg in ${MOD_OVERLAY_DIRS[@]+"${MOD_OVERLAY_DIRS[@]}"}; do
@@ -361,8 +379,12 @@ for overlay_arg in ${MOD_OVERLAY_DIRS[@]+"${MOD_OVERLAY_DIRS[@]}"}; do
         fail "--mod-overlay '$overlay_dir' has no 1.6/Assemblies — run its build.sh first."
     overlay_id="$(read_package_id "$overlay_dir")" ||
         fail "--mod-overlay '$overlay_dir': could not read its packageId."
-    overlay_dest="$(resolve_overlay_target "$overlay_id" "$overlay_dir")/1.6/Assemblies"
+    overlay_target="$(resolve_overlay_target "$overlay_id" "$overlay_dir")"
+    overlay_dest="$overlay_target/1.6/Assemblies"
     INSTALL_PAIRS+=("$overlay_src:$overlay_dest")
+    MOD_OVERLAY_ARGS+=("$overlay_dir")
+    MOD_OVERLAY_IDS+=("$overlay_id")
+    MOD_OVERLAY_TARGETS+=("$overlay_target")
     log "--mod-overlay: $overlay_id — $overlay_src -> $overlay_dest"
 done
 
@@ -1038,6 +1060,66 @@ PYEOF
 # still exactly as we left it, so restoring the real one is safe" from "someone has edited this since"
 # — and it is the specific check that would have caught the real 828-mod list being replaced.
 seal_claim "$MODSCONFIG"
+
+# ---------------------------------------------------------------------------
+# Step 3b: every --mod-overlay target must actually be activated
+# ---------------------------------------------------------------------------
+# --mod-overlay swaps an ACTIVATED mod's assemblies. It does not activate anything: only --mod and a
+# scenario's requiredMods put a packageId into the list Step 3 just wrote. Get that wrong and nothing
+# else complains — destination resolution falls back to Mods/, where the mod is permanently installed,
+# so the run reports installing a build over a mod the game will never load, and every probe that mod
+# registers is silently absent.
+#
+# The first thing that noticed used to be the type-load gate at the END of the run, and it named the
+# wrong cause: "the probe bridge and the mod it probes came from different builds". That guess is
+# specific and plausible, which is the expensive kind of wrong — it cost a debugging cycle spent
+# comparing build fingerprints, commits and decompiled IL before anyone questioned the premise. See
+# issue #27. One string comparison here turns that into an instant, correct message.
+#
+# Checked against the file Step 3 wrote rather than against the variables that fed it, so this cannot
+# drift as that composition grows: whatever ends up active is what gets compared. That is also why it
+# runs here and not before Step 1 — the answer does not exist until the list is written. Failing this
+# late costs three claimed files that teardown rolls straight back; failing at the old point cost a
+# multi-minute RimWorld boot and a misleading verdict.
+#
+# Only the ids inside <activeMods>: <knownExpansions> is carried over verbatim from the user's real
+# file and has <li> entries of its own, including (after --without-dlc) expansions this run
+# deliberately left inactive.
+read_active_mod_ids() {
+    python3 - "$1" <<'PYEOF'
+import re, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    m = re.search(r"<activeMods>(.*?)</activeMods>", f.read(), re.S | re.I)
+if not m:
+    sys.exit(f"no <activeMods> in {sys.argv[1]}")
+for pid in re.findall(r"<li>(.*?)</li>", m.group(1), re.S):
+    print(pid.strip().lower())
+PYEOF
+}
+
+assert_overlay_targets_activated() {
+    if (( ${#MOD_OVERLAY_IDS[@]} == 0 )); then
+        return 0
+    fi
+    local active i
+    active="$(read_active_mod_ids "$MODSCONFIG")" ||
+        fail "could not read the activeMods list back out of $MODSCONFIG."
+    for i in "${!MOD_OVERLAY_IDS[@]}"; do
+        # -x -F: whole line, literal. A packageId is a whole <li> here, and substring matching would
+        # let a mod pass because some unrelated id contains its name.
+        if ! grep -qxF -- "${MOD_OVERLAY_IDS[$i]}" <<< "$active"; then
+            log "  --mod-overlay swaps an activated mod's assemblies; it does not activate the mod."
+            log "  Nothing else would have told you: the overlay resolved, and the run would have"
+            log "  installed a build over a mod the game never loads."
+            log "  Add the installed copy as a mod under test:"
+            log "      --mod ${MOD_OVERLAY_TARGETS[$i]}"
+            log "  (or name ${MOD_OVERLAY_IDS[$i]} in the scenario's requiredMods)."
+            fail "--mod-overlay ${MOD_OVERLAY_ARGS[$i]} targets ${MOD_OVERLAY_IDS[$i]}, which is not activated for this run."
+        fi
+    done
+    log "--- Step 3b: all ${#MOD_OVERLAY_IDS[@]} overlay target(s) are active in this run's modlist ---"
+}
+assert_overlay_targets_activated
 
 # ---------------------------------------------------------------------------
 # Step 4: install the save source
