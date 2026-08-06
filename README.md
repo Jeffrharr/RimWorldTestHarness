@@ -379,6 +379,8 @@ authored scenarios can't overwrite each other's images.
 | Flag | Effect |
 |---|---|
 | `--mod <folder>` | Activate a mod alongside the harness. Repeatable, and optional — this repo's own scenarios need none. |
+| `--mod-overlay <folder>` | Install `<folder>/1.6/Assemblies` over the already-installed mod with the same `packageId` for the run, then restore it. How you test a git worktree. It swaps an **activated** mod's assemblies; it does not activate one, so the installed copy still needs its own `--mod`. |
+| `--install <src>:<dst>` | The same overlay with both paths spelled out, for anything that isn't a mod's assemblies. |
 | `--suite <list.txt>` | Run the scenarios named in a list file. |
 | `--isolation=auto\|always\|never` | How hard a suite works to isolate one scenario from the next. |
 | `--no-teardown` | Leave symlinks / `ModsConfig` / `autostart.rws` in place for post-mortem debugging. |
@@ -526,6 +528,11 @@ fails, subscribe through the in-game Workshop UI instead.
 - **Fog hides your scene.** A freshly generated colony reveals only a small pocket, and RimWorld draws
   neither terrain nor things in fogged cells. `unfog` defaults to true for this reason; if you set it
   false you can get a perfectly green run over an empty-looking image.
+- **An overlaid mod still needs to be activated.** Testing a worktree takes both flags: `--mod` on the
+  installed copy to put it in this run's `ModsConfig.xml`, and `--mod-overlay` on the worktree to swap
+  in its build. With only the overlay the run looks healthy — the overlay resolves against `Mods/` and
+  reports installing — while the mod never loads and every probe it registers is absent, which reads
+  as a build problem rather than a missing flag. `--print-config` shows both halves without launching.
 - **`override` methods are the classic silent breakage.** If RimWorld renames a base method, your
   override compiles fine and is simply never called. That's what `Tests/RimWorldTestHarness.ApiTests`
   is for — run `./test.sh` after every RimWorld update, before you load the game.
