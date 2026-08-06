@@ -103,6 +103,14 @@ already-installed copy for the duration of the run, then puts the original back:
   /path/to/CelestialLighting/Tests/Scenarios/x.json
 ```
 
+- **All three flags are load-bearing.** `--mod-overlay` swaps an *activated* mod's assemblies; it
+  does not activate anything. Drop the first `--mod` and the overlay still resolves (it falls back to
+  `Mods/`) and still reports installing, but the mod never enters this run's `ModsConfig.xml`, so it
+  never loads and every probe it registers is simply absent. That reads as a build problem rather than
+  a missing flag; `--print-config` tells the two apart, because it prints one `MOD_UNDER_TEST=` line
+  per mod that will be activated next to the `INSTALL=` line the overlay resolved to. An overlay with
+  no matching `MOD_UNDER_TEST` is the shape of this mistake. The runner has both facts by the time it
+  writes `ModsConfig.xml` and could refuse the run outright; issue #27 tracks doing so.
 - It resolves the destination itself, by matching the worktree's `packageId` against the `--mod`
   folders and then `Mods/` — `--print-config` shows the resolved `src -> dest` without launching.
 - Pass the worktree to `--mod-overlay` **only**, never also to `--mod`: that gives two mod folders
