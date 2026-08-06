@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.IO;
 using LudeonTK;
 using RimWorld;
@@ -33,7 +34,10 @@ public static class HarnessDebugActions
         // Safe to set in the same frame as the capture: Unity runs Update (where the driver pumps
         // steps) before OnGUI and rendering, so the frame grabbed at end-of-frame is already clean.
         if (hideUi)
+        {
             SetScreenshotMode(true);
+            CloseDevWindows();
+        }
 
         ScreenCapture.CaptureScreenshot(absolutePath);
     }
@@ -44,6 +48,40 @@ public static class HarnessDebugActions
     {
         if (Find.UIRoot != null)
             Find.UIRoot.screenshotMode.Active = active;
+    }
+
+    // Closes RimWorld's dev-tool windows so they do not sit on top of a captured frame.
+    //
+    // WHY THIS IS NOT COVERED BY screenshotMode. Vanilla's screenshot mode suppresses the things it
+    // considers "UI chrome" — dev toolbar, colonist bar, main buttons, alerts, letters, messages —
+    // but it does NOT touch the window stack, so anything actually OPEN stays drawn over the shot.
+    //
+    // That matters here specifically because every harness run forces dev mode on (autostart is
+    // gated on it), and RimWorld auto-opens EditWindow_Log on the first warning. A stock mod folder
+    // produces plenty — missing <downloadUrl> on half the Workshop, duplicate packageIds, a hidden
+    // ritual precept being added on load — so in practice the log window is open before the first
+    // scenario step runs, and every screenshot came out with a grey panel across the middle third.
+    // The A/B pair is still *diffable* (the panel is identical in both frames and cancels out), but
+    // it is useless as a human-readable before/after, which is most of what screenshots are for.
+    //
+    // Closes the whole EditWindow family rather than EditWindow_Log alone: the inspector, def editor
+    // and tweak-values windows are equally capable of covering the map, and a scenario that opened
+    // one deliberately would not be asking for hideUi.
+    //
+    // The window list is snapshotted before closing because Close() mutates it — iterating the live
+    // IList while removing from it is the standard way to miss half the entries.
+    private static void CloseDevWindows()
+    {
+        if (Find.WindowStack == null)
+            return;
+
+        List<Window> open = new List<Window>(Find.WindowStack.Windows);
+
+        foreach (Window window in open)
+        {
+            if (window is LudeonTK.EditWindow)
+                window.Close(doCloseSound: false);
+        }
     }
 
     private static int _menuShotCounter;
