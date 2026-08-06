@@ -113,7 +113,7 @@ public class ProfileMathTests
         });
     }
 
-    // Anchored at the start and case-sensitive: the analyzer's label is "Namespace.Type:Method", so a
+    // Anchored at the start and case-sensitive: the analyzer's label is "Namespace.Type:Method(params)", so a
     // mod's root namespace is exactly the prefix an author writes, and a case-insensitive match would
     // let a misspelling work here and nowhere else.
     [TestCase("Mod.A:M", "Mod", ExpectedResult = true)]

@@ -167,7 +167,7 @@ public static class ProfileExpander
         if (string.IsNullOrWhiteSpace(prefix))
         {
             error = $"'{StepArgs.ProfilePrefix}' is required — give the label prefix to keep, normally " +
-                    "the mod's root namespace (the analyzer labels rows \"Namespace.Type:Method\")";
+                    "the mod's root namespace (the analyzer labels rows \"Namespace.Type:Method(params)\")";
             return false;
         }
 

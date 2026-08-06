@@ -174,7 +174,8 @@ public static class StepArgs
     // green-run-means-less failure in miniature.
     public const string ProfileName = "name";
 
-    // Label prefix rows are filtered to, matched against the analyzer's "Namespace.Type:Method" key —
+    // Label prefix rows are filtered to, matched against the analyzer's key for the patch method —
+    // "Namespace.Type:Method(params)", e.g. "CelestialLighting.Patch_Foo:Postfix(ref Vector2&)" —
     // in practice a mod's root namespace. Required, and required to be non-empty: unfiltered means
     // every profiled method in the load, which is thousands of rows of vanilla in the report.
     public const string ProfilePrefix = "prefix";

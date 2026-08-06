@@ -65,8 +65,14 @@ public sealed class ProfileStartAction : IStepAction
         }
     }
 
+    // Invariant culture, matching Shared/ArgReader: a scenario file is data that has to read the same
+    // on any machine, and these values were already validated at load through exactly that parser.
     internal static int ReadInt(IReadOnlyDictionary<string, string> args, string key, int fallback) =>
-        args.TryGetValue(key, out string? raw) && int.TryParse(raw, out int value) ? value : fallback;
+        args.TryGetValue(key, out string? raw) &&
+        int.TryParse(raw, System.Globalization.NumberStyles.Integer,
+                     System.Globalization.CultureInfo.InvariantCulture, out int value)
+            ? value
+            : fallback;
 }
 
 // Zeroes the counters and holds the run for the measured frames. A `frames` of 0 means "do not idle" —
@@ -126,7 +132,7 @@ public sealed class ProfileStopAction : IStepAction
             return StepOutcome.Fail(
                 $"no profiled method's label starts with '{prefix}' " +
                 $"({table.RowsBeforeFilter} methods ran during the window). Check the prefix against " +
-                "the analyzer's \"Namespace.Type:Method\" labels, and that the mod is in this run's mod list.");
+                "the analyzer's \"Namespace.Type:Method(params)\" labels, and that the mod is in this run's mod list.");
         }
 
         ProfileResults.Store(table);

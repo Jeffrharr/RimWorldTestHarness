@@ -256,7 +256,7 @@ express:
 Writing the three primitives out instead of `Profile` is how you profile *a span of steps* rather
 than a span of idle frames — `ProfileStart`, `ProfileMeasure`, a `Timelapse`, `ProfileStop`.
 
-**`prefix`** is matched against the analyzer's own row label, which is `Namespace.Type:Method` for the
+**`prefix`** is matched against the analyzer's own row label, which is `Namespace.Type:Method(params)` for the
 *patch* method — so a mod's root namespace is the prefix you want. It is required, case-sensitive and
 anchored at the start. A prefix that matches nothing **fails the step** rather than recording an empty
 table, because an empty table is indistinguishable from "this mod costs nothing".
@@ -264,7 +264,10 @@ table, because an empty table is indistinguishable from "this mod costs nothing"
 **Metrics**: `avgMsPerFrame`, `maxMsPerFrame`, `totalMs`, `calls`, `callsPerFrame`,
 `maxCallsPerFrame`, `avgUsPerCall`, `percentOfFrame`, `percentOfSixtyFpsBudget`. `label` may be an
 exact row label, a unique substring of one (ambiguity is an error, not a guess), or `*` for the
-table's totals — which is the assertion that survives a patch being renamed or split in two.
+table's totals — which is the assertion that survives a patch being renamed or split in two. Prefer a
+substring: the full label carries a parameter list
+(`RimWorldTestHarness.Mod.Patch_ForcedLatitude:Postfix(ref Vector2&)`), and pinning that in a scenario
+breaks on any signature change.
 
 #### Reading the numbers without fooling yourself
 
@@ -304,6 +307,16 @@ test:
 ```bash
 ./Runner/run_test.sh --profiler Scenarios/profile_harness_patches.json
 ```
+
+A live run of it, for calibration — and for what the extra columns buy you:
+
+| Label | Avg ms/frame | Max ms/frame | Calls | Calls/frame | **Max calls/frame** | µs/call |
+|---|---|---|---|---|---|---|
+| `Patch_ForcedLatitude:Postfix` | 0.0046 | 0.100 | 23,081 | 76.7 | **1,496** | 0.06 |
+| `Patch_DriveScenario:Postfix` | 0.0009 | 0.0017 | 300 | 1.0 | 1 | 0.92 |
+
+Two patches, three orders of magnitude apart in call count, and one of them with a frame that took
+1,496 calls against a mean of 77. Nothing in a per-call timing probe would have shown either.
 
 ### A richer example
 
