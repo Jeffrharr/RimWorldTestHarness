@@ -871,6 +871,109 @@ to it. The dangerous half is the switch: a following scenario that believed itse
 open on the orbital platform and measure the wrong world while every step in it reported success. A
 flag of its own, outside `SoftResettable`, so the planner reloads around it.
 
+## Profiling: borrowing another mod's instrumentation
+
+Our probes answer "how long does one call of this take". They cannot answer "how often does it
+happen", and in practice that is the question with the interesting answer — a hook that starts firing
+twice as often after a refactor is invisible to every per-call timing we can write. Nor can a probe see
+the *shape* of a cost: an average of 0.45 ms hiding a 3.0 ms worst frame is a dropped frame, and a
+rolling-refresh design exists precisely to avoid that spike. Building either measurement ourselves
+means instrumenting arbitrary methods at runtime, which is a project.
+
+Dubs Performance Analyzer already does it, so `Profile` drives the analyzer rather than reimplementing
+it. Everything below follows from that being *someone else's optional Workshop mod*.
+
+### It is reached only by reflection
+
+`Mod/Profiling/DubsAnalyzer.cs` is the only file that names an analyzer type, and it names them all as
+strings. A compile-time reference would tie the harness's build to a Workshop download — but the real
+problem is what happens at runtime without it: an assembly-level reference is resolved when Mono first
+JITs a method touching those types, so an install lacking the analyzer would take a `TypeLoadException`
+somewhere unrelated to profiling. Reflection turns absence into a value we can test for, which is what
+makes the requirement — no-op *loudly* — implementable at all.
+
+Absence is reported as `StepOutcome.Skip`, the path `LandInOrbit` takes without Odyssey: the scenario
+stops, the run stays green, and the report, `Player.log` and the runner's summary all say `SKIPPED`
+with the reason. A step that quietly did nothing would leave a green run that verified less than it
+claimed, which is the failure this repo exists to prevent.
+
+### It must not be in an ordinary run's load order
+
+The analyzer instruments by transplanting timing calls into the body of every Harmony-patched method
+in the load. In a run that has it active, *every* timing number the harness produces — `Probe` steps
+included — comes from a rewritten build. `Runner/run_test.sh --profiler` is therefore the only thing
+that activates it, and it is off by default.
+
+The same fact is why profiling declares `ScenarioResidue.Profiler`, outside `SoftResettable`. Nothing
+puts those method bodies back short of the analyzer's own `Harmony.UnpatchAll`, which runs
+asynchronously and calls `GC.Collect` — not something to do to a live run between scenarios. So a
+profiling scenario costs a save reload before whatever follows it. This is the residue with the least
+visible symptom and the worst consequence: the world looks untouched while every later timing in the
+load is quietly wrong.
+
+### Driving a GUI mod headlessly
+
+The analyzer has no headless API; its entry point is a window opening. `DubsAnalyzer.Start()` replays
+`Window_Analyzer.PreOpen`'s sequence without the GUI — load the entry list, Harmony-patch
+`Root_Play.Update` and `TickManager.DoSingleTick` so the per-frame measurement cycle runs, activate the
+Harmony-patches entry, `BeginProfiling`. Three details are load-bearing:
+
+- **Patch through the analyzer's own `Harmony` instance**, not ours, and honour its `Modbase.isPatched`
+  flag. Patching under our id would leave the analyzer believing it had never patched, and opening its
+  window later would double-count every frame.
+- **Force patching synchronous** for the duration (`Settings.disableThreadedPatching`). The analyzer
+  normally instruments on a background `Task`; returning early would open the window on a load still
+  being rewritten, and the first frames would be missing whichever patches had not been transplanted
+  yet, with nothing anywhere saying so.
+- **Find the entry by its backing type, not its name.** Entry names go through RimWorld's translation
+  system, so name matching would work in English and fail silently in every other locale.
+
+Harvesting reads `Profiler.CollectStatistics` directly rather than `Analyzer.Logs`, because `Logs` is
+rebuilt on a background task a couple of times a second — reading it would give a window whose length
+we did not choose.
+
+### Three primitives, because the driver only idles between steps
+
+`Profile` desugars into `ProfileStart` / `ProfileMeasure` / `ProfileStop`. The window has to be bounded
+by frames that actually render, and the driver only waits *between* steps (`StepOutcome.WaitFrames`);
+a single step that "profiles for 600 frames" would have to block inside one `Root_Play.Update` postfix,
+during which no frames render and nothing is profiled. `Start` and `Measure` are separate again because
+the analyzer rewrites method bodies, so the first call of each pays JIT — `Start` warms, `Measure`
+zeroes the counters and opens the real window. Written out by hand, the primitives also let a scenario
+profile *a span of steps* (a `Timelapse`, say) rather than a span of idle frames.
+
+`ProfileStart` also forces a game speed, defaulting to `normal` rather than leaving whatever the
+scenario had. A scenario that jumped the clock leaves the game paused, and profiling a paused colony
+records a load of tick-driven patches that never fire — a table of near-zeroes reading as "this mod is
+free".
+
+### Two numbers that lie if reported alone
+
+The arithmetic lives in `Shared/ProfileMath.cs`, unit-tested offline, because every derived figure here
+is a division whose wrong answer is plausible rather than obviously broken.
+
+- **The percentage.** The analyzer reports a share of the frame the machine *achieved*, and a headless
+  harness run hits ~350 fps. A row at 15.9% of a 2.85 ms frame is ~2.7% of a 60 fps budget — the bare
+  percentage reads six times more alarming than it is. Tables therefore record `FrameMs` and
+  `FramesPerSecond` beside the percentages, and every row carries `PercentOfSixtyFpsBudget` as well.
+- **The mean per call.** Call counts include invocations that hit a guard clause and return, so
+  `AvgUsPerCall` averages expensive and trivial calls together and *understates* the cost of the ones
+  that do work. `MaxCallsPerFrame` is the only shape information the analyzer gives us behind that
+  mean. Both caveats also ride in each table's `Notes`, because the moment someone misreads them is
+  while looking at a report, not while reading this file.
+
+Two more things are refused rather than reported: a window in which the analyzer recorded no frames
+(`CollectStatistics` divides by that count, producing `NaN` averages that are both unserializable and
+indistinguishable from "free"), and a `prefix` matching no rows (an empty table reads the same way, and
+the likely cause is a renamed namespace or a mod missing from the run's `ModsConfig`).
+
+Tables themselves never gate `Pass`; only a `ProfileAssert` step does. The primary use is diffing the
+same table between builds, and a run going red because the machine was busy would train everyone to
+ignore the colour. `ProfileAssert` bounds are `max` / `min` / `expectedValue`+`tolerance`, and the
+one-sided forms exist because performance assertions almost always are — expressing "at most 1 ms" as
+`expectedValue: 0.5, tolerance: 0.5` is a gate nobody writes twice. That is what `ProbeCheckResult`
+gained a `Comparison` field for.
+
 ## API compatibility tests
 
 `Tests/RimWorldTestHarness.ApiTests/` (Mono.Cecil, pattern:
@@ -885,3 +988,10 @@ alongside `Assembly-CSharp.dll`, not inside it, so this project loads two Mono.C
 `ModuleDefinition`s. A separate project from `Tests/RimWorldTestHarness.Tests/` (rather than one
 project like `PerformanceSearch` uses) because these tests are `[Category("RequiresGameDll")]` and
 `Assert.Ignore` themselves out when the real DLLs aren't present; `test.sh` runs both projects.
+
+`DubsAnalyzerApiTests` pins the analyzer's surface in the same project, ignored when it isn't
+installed. It matters more than the vanilla fixture beside it: everything `DubsAnalyzer` touches is
+reflection over an optional mod on nobody's release cadence but its own, so none of it is
+compiler-checked. `Profiler.CollectStatistics`'s **out-parameter order** in particular is pinned,
+because it is read back positionally — a reordering there would swap max and total time and produce an
+entirely plausible wrong report.
