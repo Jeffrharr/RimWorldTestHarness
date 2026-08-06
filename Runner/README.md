@@ -140,6 +140,35 @@ already-installed copy for the duration of the run, then puts the original back:
 `--install <src-dir>:<dst-dir>` is the same thing with both paths spelled out, for anything that isn't
 a mod's assemblies.
 
+## `--profiler` — the one flag that changes what the run measures
+
+`--profiler` adds Dubs Performance Analyzer (Workshop 2038874626) to the run's `ModsConfig`, so
+`Profile` steps have something to measure with. It is off by default and should stay that way for
+every run whose numbers you intend to compare against another run's.
+
+The reason is not politeness about load order. The analyzer instruments by **transplanting timing
+calls into the body of every Harmony-patched method in the load** — so in a run that has it active,
+every timing number the harness produces is a number measured through a rewritten build. That includes
+ordinary `Probe` steps that have nothing to do with profiling. Profile in one run; pin your baselines
+in runs that never saw the flag.
+
+Two things the flag does that are easy to get wrong by hand:
+
+- **It reads the packageId off whichever copy is installed** instead of hardcoding one. The About.xml
+  declares `Dubwise.DubsPerformanceAnalyzer.steam` — with a literal `.steam` — and RimWorld appends a
+  *further* `_steam` to a Workshop copy when a local copy of the same id also exists. A hardcoded
+  spelling would write a `ModsConfig` entry naming no installed mod: the game boots fine, without the
+  analyzer, and the run's `Profile` steps report it absent.
+- **It loads immediately after `brrainz.harmony`**, ahead of the mods under test. The analyzer patches
+  the `Harmony` constructor to record which mod owns which patch, so a mod that builds its Harmony
+  instance before the analyzer loads has its patches attributed to nobody — the per-mod table comes
+  back missing exactly the rows you launched the run to look at. This is why it is a flag and not
+  "just pass it as `--mod`": a `--mod` lands after the required mods, which is too late.
+
+Without the flag, a `Profile` step reports the scenario `SKIPPED` with the reason rather than silently
+recording nothing. See the main `README.md`, "Profiling", for the step reference and for how to read
+the resulting table without being misled by its percentage column.
+
 ## Asset claims: nothing is swapped without being written down
 
 The lock stops two runs overlapping. It never covered what callers swapped in *around* a run — chiefly

@@ -184,6 +184,7 @@ lighting would happily validate against.
 | `Screenshot` | `fileName`, `hideUi` | Written next to the report. `hideUi` defaults to `true` (blanks the HUD via RimWorld's screenshot mode). |
 | `SetFeature` | `featureName`, `enabled` | Flips a feature flag your mod registered. The point is A/B: screenshot with an effect off, flip it on, screenshot again — in one boot. |
 | `Assert` | `kind`, `images`, `prompt`, `expect`, `confidenceGate`, `logLines` | `kind: vision` — a rubric for an LLM judge over named screenshots plus the game's recent warnings/errors. Soft gate: only a *confident* fail blocks. See `Runner/README.md`, "Vision asserts". |
+| `ProfileAssert` | `table`, `label`, `metric`, `max` \| `min` \| `expectedValue`+`tolerance` | Checks one number out of a profile table (see "Profiling" below). Lands in the same `ProbeChecks` gate a `Probe` step does. |
 
 **Scene setup** — build something worth looking at, at runtime, instead of authoring it into the
 save. Shared by `PlaceThings` / `SetTerrain` / `LookAt` / `SpawnPawn`: `anchor` (`"center"` by
@@ -214,6 +215,95 @@ clock is jumped and the render is allowed to settle, which is why `settleFrames`
 is the same thing at the other end of the scale: still captures, exact jumps, no recording. Both
 deliberately use jumps rather than `FastForward`, whose ticks keep running through the settle frames
 and the screenshot flush and would space the captures unevenly.
+
+### Profiling: per-patch cost and call count
+
+A probe times **one call** of a hot path. It never asks **how often that call happens**, and in
+practice the call count is the more interesting number. The `Profile` step runs a window of frames
+under [Dubs Performance Analyzer](https://steamcommunity.com/sharedfiles/filedetails/?id=2038874626)
+and writes its per-patch table into the run's report, so a scenario can pin three things no probe can
+express:
+
+- **calls per frame** — catches a hook that starts firing twice as often after a refactor. Two patches
+  costing the same per call but firing 3,700 and 7,400 times a window are telling you which one is
+  hooked per-map and which per-section.
+- **worst frame** — an average of 0.45 ms with a `maxMsPerFrame` of 3.0 ms is a dropped frame the
+  average hides completely. A rolling-refresh design exists to avoid exactly that spike, and the only
+  way to know it worked is to measure the worst frame.
+- **total cost across every patch** — a probe covering one of three patches leaves two thirds of the
+  subsystem invisible.
+
+```json
+{ "type": "Profile",
+  "args": { "name": "aurora", "prefix": "CelestialLighting", "frames": "600" } },
+
+{ "type": "ProfileAssert",
+  "args": { "table": "aurora", "label": "*", "metric": "avgMsPerFrame", "max": "1.0" } },
+
+{ "type": "ProfileAssert",
+  "args": { "table": "aurora", "label": "Patch_GameConditionManager",
+            "metric": "callsPerFrame", "expectedValue": "6", "tolerance": "1" } }
+```
+
+| Type | Args | Notes |
+|---|---|---|
+| `Profile` | `name`, `prefix`, `frames`, `warmupFrames`, `timeSpeed`, `entry` | Composite: desugars into `ProfileStart` / `ProfileMeasure` / `ProfileStop`. `name` and `prefix` are **required**. `frames` defaults to 600 (max 1999 — the analyzer's ring buffer). `warmupFrames` defaults to 30. `timeSpeed` defaults to `normal`. |
+| `ProfileStart` | `entry`, `timeSpeed`, `warmupFrames` | Activates and warms the analyzer. |
+| `ProfileMeasure` | `frames` | Zeroes the counters and opens the window. `frames` defaults to **0**, meaning "don't idle — the steps that follow are the window". |
+| `ProfileStop` | `name`, `prefix` | Harvests the table and stops profiling. |
+| `ProfileAssert` | `table`, `label`, `metric`, `max` \| `min` \| `expectedValue`+`tolerance` | `label` defaults to `*` (the table's totals). |
+
+Writing the three primitives out instead of `Profile` is how you profile *a span of steps* rather
+than a span of idle frames — `ProfileStart`, `ProfileMeasure`, a `Timelapse`, `ProfileStop`.
+
+**`prefix`** is matched against the analyzer's own row label, which is `Namespace.Type:Method` for the
+*patch* method — so a mod's root namespace is the prefix you want. It is required, case-sensitive and
+anchored at the start. A prefix that matches nothing **fails the step** rather than recording an empty
+table, because an empty table is indistinguishable from "this mod costs nothing".
+
+**Metrics**: `avgMsPerFrame`, `maxMsPerFrame`, `totalMs`, `calls`, `callsPerFrame`,
+`maxCallsPerFrame`, `avgUsPerCall`, `percentOfFrame`, `percentOfSixtyFpsBudget`. `label` may be an
+exact row label, a unique substring of one (ambiguity is an error, not a guess), or `*` for the
+table's totals — which is the assertion that survives a patch being renamed or split in two.
+
+#### Reading the numbers without fooling yourself
+
+- **The percentage column is a trap.** The analyzer reports a share of the frame the machine *actually
+  achieved*, and a headless harness run happily hits 350 fps. A row at 15.9% of a 2.85 ms frame is
+  ~2.7% of a 60 fps budget. Every table therefore records `frameMs` and `framesPerSecond` next to the
+  percentages, and every row carries `percentOfSixtyFpsBudget` as well as `percentOfFrame`. Compare
+  the second one before concluding anything is expensive.
+- **Call counts include calls that do nothing.** A patch guarding `if (map.x != y) return;` still
+  counts every entry, so `avgUsPerCall` averages the expensive invocations together with the trivial
+  ones and *understates* the real cost of the ones that do work. `maxCallsPerFrame` is the only shape
+  information available behind that mean.
+- **Absolute figures carry the profiler's own overhead.** Trust ratios between rows, and changes in
+  the same row between builds. These caveats also ride in every table's `Notes`, because the moment
+  someone misreads them is while looking at a report, not while reading this file.
+
+#### Opt-in, and loudly absent
+
+The analyzer is an optional Workshop mod and **must not be in an ordinary run's load order** — it
+rewrites the body of every Harmony-patched method in the load, so every timing number in a run that
+has it loaded, probes included, is measured through an instrumented build. `Runner/run_test.sh
+--profiler` is the only thing that activates it, and it is off by default.
+
+Without it, `Profile` **skips the scenario** — the same path `LandInOrbit` takes without Odyssey. The
+run stays green, and the report, `Player.log` and the runner's summary all say `SKIPPED` with the
+reason. That is deliberate: a step that quietly did nothing would leave a green run that verified less
+than it claimed. Put `Profile` steps in their **own scenario** for the same reason the skip is
+scenario-wide.
+
+Profiling dirties `ScenarioResidue.Profiler`, which requires a reload — transplanted method bodies
+stay transplanted for the life of the process, so without the reload the *next* scenario's timings
+would be quietly wrong.
+
+`Scenarios/profile_harness_patches.json` profiles the harness's own patches and needs no mod under
+test:
+
+```bash
+./Runner/run_test.sh --profiler Scenarios/profile_harness_patches.json
+```
 
 ### A richer example
 
@@ -386,6 +476,7 @@ authored scenarios can't overwrite each other's images.
 | `--no-teardown` | Leave symlinks / `ModsConfig` / `autostart.rws` in place for post-mortem debugging. |
 | `--delete-frames` | Delete timelapse PNGs once stitched into video. |
 | `--without-dlc <packageId>` | Leave an installed DLC out of this run's `ModsConfig` (e.g. `ludeon.rimworld.odyssey`). Repeatable. For exercising a scenario's skip-without-the-DLC path on a machine that owns the DLC — otherwise that branch is code nobody can run. |
+| `--profiler` | Activate Dubs Performance Analyzer (Workshop 2038874626) for this run, so `Profile` steps have something to measure with. **Off by default and meant to stay that way** — it instruments every Harmony patch in the load, so every timing number in the run, probes included, comes from an instrumented build. Use it for the run that answers a performance question, never for the pinned run you compare against. Fails if the analyzer is not installed. |
 | `--print-config` | Print every path the run would use and exit — touching, locking, and creating nothing. |
 
 `--without-dlc` deactivates rather than uninstalls, which is the right lever: `ModsConfig.<Dlc>Active`
@@ -416,6 +507,29 @@ The report is JSON in `Runner/reports/`. A single scenario:
   "Errors": []
 }
 ```
+
+A scenario that profiled also carries a `Profiles` array — one table per `Profile`/`ProfileStop` step,
+with a row per patch and the caveats in `Notes`:
+
+```json
+"Profiles": [
+  { "Name": "aurora", "Prefix": "CelestialLighting",
+    "MeasuredFrames": 600, "FrameMs": 2.847, "FramesPerSecond": 351.25,
+    "TotalAvgMsPerFrame": 0.502, "TotalPercentOfSixtyFpsBudget": 3.012,
+    "Rows": [
+      { "Label": "CelestialLighting.Patch_GameConditionManager:Postfix",
+        "AvgMsPerFrame": 0.453, "MaxMsPerFrame": 2.999, "Calls": 3738,
+        "CallsPerFrame": 6.23, "AvgUsPerCall": 72.71,
+        "PercentOfFrame": 15.911, "PercentOfSixtyFpsBudget": 2.718 }
+    ],
+    "Notes": ["Calls counts every entry into the method, including …"] }
+]
+```
+
+Tables are **informational** — only a `ProfileAssert` step turns one of these numbers into something
+that gates `Pass`. The primary use is diffing the same table between two builds, and a run going red
+because the machine was busy would train everyone to ignore the colour. A `ProfileAssert` records an
+ordinary `ProbeCheckResult` with a `Comparison` of `within`, `atMost` or `atLeast`.
 
 A suite wraps one unchanged `ScenarioReport` per scenario in a `SuiteReport` with `Pass`, `Errors`,
 and `IsolationNotes`; you tell the two apart by the presence of a `Scenarios` key. The single-scenario
