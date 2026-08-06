@@ -23,6 +23,37 @@ public static class ReportComparer
             ExpectedValue = expected,
             Tolerance = tolerance,
             Pass = WithinTolerance(actual, expected, tolerance),
+            Comparison = ProbeComparison.Within,
+        };
+    }
+
+    // The comparison a check's recorded Comparison asks for. An unrecognised value falls to the
+    // two-sided form, which is the reading a report written before ProbeComparison existed deserves —
+    // and the conservative direction, since a within-check is the strictest of the three.
+    public static bool Satisfies(double actual, double expected, double tolerance, string? comparison)
+    {
+        if (comparison == ProbeComparison.AtMost)
+            return actual <= expected;
+
+        if (comparison == ProbeComparison.AtLeast)
+            return actual >= expected;
+
+        return Math.Abs(actual - expected) <= Math.Abs(tolerance);
+    }
+
+    // The generalised CheckProbe, used by ProfileAssert. Kept beside it rather than replacing it so the
+    // Probe step's call site still reads as the two-sided check it has always been.
+    public static ProbeCheckResult Check(
+        string name, double actual, double expected, double tolerance, string comparison)
+    {
+        return new ProbeCheckResult
+        {
+            ProbeName = name,
+            ActualValue = (float)actual,
+            ExpectedValue = (float)expected,
+            Tolerance = (float)tolerance,
+            Pass = Satisfies(actual, expected, tolerance, comparison),
+            Comparison = comparison,
         };
     }
 
