@@ -115,9 +115,23 @@ public sealed class ProfileStopAction : IStepAction
         if (ProfileResults.Contains(name))
             return StepOutcome.Fail($"a profile table named '{name}' was already recorded in this scenario");
 
-        DubsAnalyzer.Harvest harvest = DubsAnalyzer.Stop();
+        // Harvest WITHOUT stopping when the run itself is profiling: the analyzer belongs to the run,
+        // and tearing it down here would leave every later scenario uninstrumented while the report
+        // still said the run was profiled. When nothing else owns it, this step stops it as it always
+        // did.
+        DubsAnalyzer.Harvest harvest = RunProfiler.Active ? DubsAnalyzer.ReadWindow() : DubsAnalyzer.Stop();
         if (harvest.Error != null)
             return StepOutcome.Fail(harvest.Error);
+
+        // An explicit window that measured nothing is a step FAILURE, not a quiet empty table: this
+        // scenario asked to measure and got nothing back. The classification is shared with run-level
+        // profiling (which reports the same conditions as a skip, because nobody asked) so the two can
+        // never disagree about what "measured nothing" means.
+        string? empty = RunProfiling.AfterWindowSkipReason(
+            gameReached: true, windowOpened: true, startError: null,
+            harvest.MeasuredFrames, harvest.Samples.Count);
+        if (empty != null)
+            return StepOutcome.Fail(empty);
 
         ProfileTable table = ProfileMath.Build(
             name, ProfileExpander.DefaultEntry, prefix,
@@ -136,9 +150,7 @@ public sealed class ProfileStopAction : IStepAction
         }
 
         ProfileResults.Store(table);
-        Log.Message(
-            $"RWTH: profile '{name}': {table.Rows.Count} rows, {table.TotalAvgMsPerFrame:0.###} ms/frame " +
-            $"({table.TotalPercentOfSixtyFpsBudget:0.##}% of a 60fps frame) over {table.MeasuredFrames} frames");
+        Log.Message($"RWTH: profile '{name}': {ProfileMetrics.Summarize(table)}");
 
         return new StepOutcome { ProfileTable = table };
     }

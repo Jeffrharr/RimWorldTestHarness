@@ -40,15 +40,26 @@ internal static class DubsAnalyzer
 
     private const string AnalyzerTypeName = "Analyzer.Profiling.Analyzer";
 
-    // Reported verbatim by every step when the analyzer is absent. Names the Workshop id and the flag,
-    // because "it is not installed" and "it is installed but not in this run's mod list" are different
-    // problems with different fixes and the message has to distinguish them.
-    public const string NotLoadedReason =
-        "Dubs Performance Analyzer is not loaded, so nothing was profiled. It is an optional Workshop " +
-        "mod (2038874626) and is deliberately kept out of ordinary runs — a profiler changes what a " +
-        "run measures. Add it with Runner/run_test.sh --profiler.";
+    // Reported verbatim by every step when the analyzer is absent. Named in Shared so the runner-side
+    // wording and the in-game wording cannot drift; see Shared/RunProfiling.cs.
+    public const string NotLoadedReason = RunProfiling.NotLoadedReason;
 
     private static object? _activeEntry;
+
+    // True from the first successful Start() until StopProfiling(). Guards Start against being run
+    // twice — run-level profiling starts the analyzer after the first map load, and an explicit
+    // ProfileStart step later in the same run would otherwise re-run entry activation and re-pay the
+    // synchronous instrumentation of the whole modlist for no change in state.
+    public static bool IsProfiling { get; private set; }
+
+    // Set by BeginWindow, cleared by whoever opened the window it belongs to. There is exactly ONE set
+    // of counters inside the analyzer, so an explicit Profile step inside a scenario silently
+    // reschedules the run-level window that wraps it. The flag is how the run-level table gets to say
+    // so (RunProfiling.CounterResetNote) instead of quietly describing a shorter span than its name
+    // implies.
+    public static bool CountersResetSinceMark { get; private set; }
+
+    public static void MarkCountersFresh() => CountersResetSinceMark = false;
 
     // Resolved once. A null means "not in this load", which is a normal, expected state — not an
     // error to log about.
@@ -82,12 +93,19 @@ internal static class DubsAnalyzer
         if (!IsLoaded)
             return NotLoadedReason;
 
+        // Idempotent: a run-level session and a later explicit ProfileStart step both want profiling
+        // on, and the second one wanting it is not a reason to instrument the load a second time.
+        if (IsProfiling)
+            return null;
+
         try
         {
             LoadEntriesOnce();
             AccessTools.Method(AnalyzerType, "BeginProfiling").Invoke(null, null);
             PatchUpdateCycleOnce();
-            return ActivateHarmonyPatchesEntry();
+            string? error = ActivateHarmonyPatchesEntry();
+            IsProfiling = error == null;
+            return error;
         }
         catch (Exception ex)
         {
@@ -119,6 +137,7 @@ internal static class DubsAnalyzer
         {
             AccessTools.Method(Lazy.GUIController, "ResetProfilers").Invoke(null, null);
             _requestedFrames = requestedFrames;
+            CountersResetSinceMark = true;
             return null;
         }
         catch (Exception ex)
@@ -141,26 +160,59 @@ internal static class DubsAnalyzer
         public static Harvest Failed(string error) => new Harvest { Error = error };
     }
 
-    // Reads the window's statistics out of the analyzer and stops profiling.
+    // Reads the window's statistics out of the analyzer, leaving it running.
     //
-    // Deliberately does NOT call Analyzer.Cleanup(): that unpatches everything on a background Task and
-    // calls GC.Collect, which is not a thing to do to a run mid-flight. The transplanted method bodies
-    // therefore stay for the life of the process, which is exactly what ScenarioResidue.Profiler
-    // declares and why a profiling scenario forces a save reload before the next one.
-    public static Harvest Stop()
+    // Split from stopping because run-level profiling harvests at the end of EVERY scenario and must
+    // not tear the analyzer down doing it — the next scenario needs the same instrumentation, measured
+    // the same way, or the two tables are not comparable and the whole point of a per-scenario table is
+    // lost. An explicit Profile step in a run that is not otherwise profiling calls Stop() below.
+    public static Harvest ReadWindow()
     {
         if (!IsLoaded)
             return Harvest.Failed(NotLoadedReason);
 
         try
         {
-            Harvest harvest = ReadStatistics();
-            EndProfiling();
-            return harvest;
+            return ReadStatistics();
         }
         catch (Exception ex)
         {
             return Harvest.Failed($"failed to read Dubs Performance Analyzer statistics: {Unwrap(ex)}");
+        }
+    }
+
+    // Harvests and then stops profiling.
+    //
+    // Deliberately does NOT call Analyzer.Cleanup(): that unpatches everything on a background Task and
+    // calls GC.Collect, which is not a thing to do to a run mid-flight. The transplanted method bodies
+    // therefore stay for the life of the process, which is exactly what ScenarioResidue.Profiler
+    // declares — and, in a run-level session, exactly why the analyzer is started before the first
+    // scenario instead: contamination that is uniform across every scenario contaminates none of them
+    // relative to the others.
+    public static Harvest Stop()
+    {
+        Harvest harvest = ReadWindow();
+        StopProfiling();
+        return harvest;
+    }
+
+    // Deactivates profiling without reading anything. Called at the end of a run-level session, where
+    // the last scenario's harvest already happened.
+    public static void StopProfiling()
+    {
+        if (!IsLoaded || !IsProfiling)
+            return;
+
+        try
+        {
+            EndProfiling();
+            IsProfiling = false;
+        }
+        catch (Exception ex)
+        {
+            // Logged rather than returned: this runs as the run is being torn down, and there is
+            // nothing left to report it to that anyone would act on.
+            Log.Warning($"RWTH: failed to stop Dubs Performance Analyzer: {Unwrap(ex)}");
         }
     }
 
@@ -173,16 +225,14 @@ internal static class DubsAnalyzer
         // and this clamp is the belt to that braces.
         int measuredFrames = Math.Min(recorded, ProfileMath.MaxFrames);
 
-        // Refused rather than returned as zeroes. CollectStatistics divides by this number, so a zero
-        // produces NaN averages — and a table of NaNs is both unserializable and indistinguishable
-        // from "this mod is free".
+        // Returned as an empty harvest rather than read: CollectStatistics divides by this number, so a
+        // zero produces NaN averages, and a table of NaNs is both unserializable and indistinguishable
+        // from "this mod is free". What an empty window MEANS is not decided here — the pure
+        // RunProfiling.AfterWindowSkipReason classifies it, and its callers differ on the disposition
+        // (an explicit ProfileStop fails, because the scenario asked to measure and got nothing; a
+        // run-level harvest skips, because nobody asked).
         if (measuredFrames <= 0)
-        {
-            return Harvest.Failed(
-                "Dubs Performance Analyzer recorded no frames during the window. Its per-frame cycle " +
-                "runs from Root_Play.Update, so a window that elapsed entirely inside a long event " +
-                "(a load, a map regen) measures nothing.");
-        }
+            return new Harvest { RequestedFrames = _requestedFrames, MeasuredFrames = 0 };
 
         Harvest harvest = new Harvest
         {
