@@ -13,6 +13,8 @@ constants of CIELAB under D65, so they fail if the transform drifts rather than 
 Run: python3 -m unittest discover -s Tests/runner   (or via ./test.sh)
 """
 
+import contextlib
+import io
 import math
 import os
 import sys
@@ -299,13 +301,18 @@ class CommandLine(unittest.TestCase):
         args = self.parse(["a.png", "b.png"])
         self.assertEqual((args.stride, args.region, args.json), (2, frame_delta.FULL_REGION, False))
 
+    def refuses(self, argv):
+        # argparse writes its complaint to stderr before exiting, which is right for a user at a
+        # prompt and pure noise in a passing test run — swallowed so a real failure elsewhere stays
+        # the only thing on screen.
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.parse(argv)
+
     def test_a_missing_frame_argument_is_refused_rather_than_defaulted(self):
-        with self.assertRaises(SystemExit):
-            self.parse(["a.png"])
+        self.refuses(["a.png"])
 
     def test_an_unknown_flag_is_refused(self):
-        with self.assertRaises(SystemExit):
-            self.parse(["a.png", "b.png", "--stide", "4"])
+        self.refuses(["a.png", "b.png", "--stide", "4"])
 
 
 class Formatting(unittest.TestCase):
