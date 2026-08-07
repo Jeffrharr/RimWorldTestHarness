@@ -68,14 +68,17 @@
 #   --without-dlc <id>     leave an installed DLC out of the run's ModsConfig (e.g.
 #                          ludeon.rimworld.odyssey). Repeatable. For exercising a scenario's
 #                          skip-without-the-DLC path on a machine that owns the DLC.
-#   --profiler             activate Dubs Performance Analyzer (Workshop 2038874626) for this run, so
-#                          Profile steps have something to measure with. OFF BY DEFAULT AND MEANT TO
-#                          STAY THAT WAY: the analyzer rewrites the body of every Harmony-patched
-#                          method in the load, so every timing number in a run that has it loaded —
-#                          including ordinary probes that have nothing to do with profiling — is a
-#                          number measured through an instrumented build. Use it for the run that
-#                          answers a performance question, never for the pinned runs you compare
-#                          against. Fails if the analyzer is not installed.
+#   --profiler             activate Dubs Performance Analyzer (Workshop 2038874626) for this run. ON
+#                          BY DEFAULT — passing this explicitly only changes one thing: a missing
+#                          analyzer becomes a hard failure instead of a warning, because you asked
+#                          for it by name.
+#   --no-profiler          leave the analyzer out. What this buys you is a run whose timings are NOT
+#                          measured through an instrumented build: the analyzer rewrites the body of
+#                          every Harmony-patched method in the load, so every timing number in a
+#                          profiled run — ordinary probes included, not just profile tables — carries
+#                          that overhead. Pin timing baselines under this flag, and record which mode
+#                          you pinned under (Probe step's `pinnedUnder` arg, which fails the run on a
+#                          mismatch rather than leaving it to a reader).
 #   --print-config         print the resolved paths for this run and exit without touching anything
 #
 # A suite list file is one scenario path per line; '#' starts a whole-line comment, and relative
@@ -209,13 +212,24 @@ ISOLATION="auto"
 PRINT_CONFIG=0
 RECOVER_ONLY=0
 
-# --profiler: put Dubs Performance Analyzer in this run's ModsConfig. Deliberately a flag of its own
-# rather than "just pass it as --mod", for two reasons. It is a Workshop mod with no folder the caller
-# would know the path of, and — the important one — it needs to load EARLY: it patches the Harmony
-# constructor to record which mod owns which patch, so any mod that builds its Harmony instance before
-# the analyzer loads ends up with its patches attributed to nobody. A --mod would land after the
-# required mods, which is too late.
-PROFILER=0
+# Put Dubs Performance Analyzer in this run's ModsConfig. Deliberately a flag of its own rather than
+# "just pass it as --mod", for two reasons. It is a Workshop mod with no folder the caller would know
+# the path of, and — the important one — it needs to load EARLY: it patches the Harmony constructor to
+# record which mod owns which patch, so any mod that builds its Harmony instance before the analyzer
+# loads ends up with its patches attributed to nobody. A --mod would land after the required mods,
+# which is too late.
+#
+# ON BY DEFAULT since profiling became a property of the RUN rather than of a scenario (see
+# Shared/RunProfiling.cs). Every scenario then gets a per-patch cost table for free, with no scenario
+# JSON and — because the analyzer starts once, before the first scenario — no mid-suite reloads. The
+# cost is that the default run's timings are instrumented ones; --no-profiler is the escape hatch and
+# the Probe step's `pinnedUnder` arg is what turns "somebody should have noticed" into a failed run.
+PROFILER=1
+
+# Whether --profiler was typed. Only affects the missing-analyzer path: asked-for-by-name is a hard
+# failure, on-by-default is a warning and a clean skip, because a machine without the Workshop mod must
+# still be able to run the suite.
+PROFILER_EXPLICIT=0
 
 # Build outputs to install over an existing installation for the life of the run, as "src:dest"
 # directory pairs. --mod-overlay resolves to entries here once packageIds are known (see
@@ -250,7 +264,7 @@ usage() {
     echo "[run_test]        [--mod <mod-folder>]... [--no-teardown] [--delete-frames]" >&2
     echo "[run_test]        [--isolation=auto|always|never] [--without-dlc <packageId>]..." >&2
     echo "[run_test]        [--mod-overlay <worktree>]... [--install <src-dir>:<dest-dir>]..." >&2
-    echo "[run_test]        [--profiler] [--print-config] [--recover-only]" >&2
+    echo "[run_test]        [--profiler | --no-profiler] [--print-config] [--recover-only]" >&2
     exit 2
 }
 
@@ -271,7 +285,8 @@ while (( $# )); do
         --mod-overlay=*) MOD_OVERLAY_DIRS+=("${1#--mod-overlay=}") ;;
         --install) shift; INSTALL_PAIRS+=("${1:-}") ;;
         --install=*) INSTALL_PAIRS+=("${1#--install=}") ;;
-        --profiler) PROFILER=1 ;;
+        --profiler) PROFILER=1; PROFILER_EXPLICIT=1 ;;
+        --no-profiler) PROFILER=0 ;;
         --recover-only) RECOVER_ONLY=1 ;;
         -*) echo "[run_test] unknown flag: $1" >&2; usage ;;
         *) SCENARIOS+=("$1") ;;
@@ -387,16 +402,23 @@ for overlay_arg in ${MOD_OVERLAY_DIRS[@]+"${MOD_OVERLAY_DIRS[@]}"}; do
     log "--mod-overlay: $overlay_id — $overlay_src -> $overlay_dest"
 done
 
-# --profiler: resolve Dubs Performance Analyzer's packageId from whatever copy is installed, rather
-# than hardcoding it. The id in its About.xml is "Dubwise.DubsPerformanceAnalyzer.steam" (yes, with a
+# Resolve Dubs Performance Analyzer's packageId from whatever copy is installed, rather than
+# hardcoding it. The id in its About.xml is "Dubwise.DubsPerformanceAnalyzer.steam" (yes, with a
 # literal ".steam"), and RimWorld additionally appends "_steam" to a Workshop mod only when a LOCAL
 # copy of the same id also exists — so hardcoding one spelling would silently produce a ModsConfig
-# entry naming no installed mod, and RimWorld would boot without the analyzer while the run's Profile
-# steps reported "not loaded". Reading the id off the folder we found cannot drift.
+# entry naming no installed mod, and RimWorld would boot without the analyzer while the run reported
+# it absent. Reading the id off the folder we found cannot drift.
 #
 # Prefers a local Mods/ copy: when both exist, RimWorld is the one that renames the WORKSHOP copy, so
 # the local folder's id is the one that stays as written.
 PROFILER_MOD_ID=""
+
+# Non-empty when profiling was wanted but ruled out before launch. Handed to the mod as
+# RWTH_PROFILE_SKIP so the reason lands in the report next to the scenarios it applies to, rather than
+# only in this script's output. The runner is the thing that actually scanned the disk, so it is the
+# thing that gets to say why.
+PROFILER_SKIP_REASON=""
+
 resolve_profiler_mod() {
     local candidate resolved id
     local matches=()
@@ -411,20 +433,33 @@ resolve_profiler_mod() {
         fi
     done
     if (( ${#matches[@]} == 0 )); then
-        fail "--profiler: Dubs Performance Analyzer is not installed. Subscribe to Workshop item 2038874626 (or drop a copy in $MODS_DIR), or drop the flag."
+        # Asked for BY NAME is a hard failure; on by default degrades to a reasoned skip. A machine
+        # without this Workshop mod must still be able to run every scenario — profiling is a bonus the
+        # harness takes when it can get it, and a default that broke on its absence would be a default
+        # nobody could keep.
+        if (( PROFILER_EXPLICIT )); then
+            fail "--profiler: Dubs Performance Analyzer is not installed. Subscribe to Workshop item 2038874626 (or drop a copy in $MODS_DIR), or drop the flag."
+        fi
+        PROFILER_SKIP_REASON="Dubs Performance Analyzer is not installed on this machine, so nothing was profiled. It is an optional Workshop mod (2038874626): subscribe to it, or drop a copy in $MODS_DIR. Pass --no-profiler to stop asking."
+        log "profiler: not installed — this run will NOT be profiled. Subscribe to Workshop item"
+        log "profiler: 2038874626 for per-patch cost tables, or pass --no-profiler to stop asking."
+        return 0
     fi
     # First match wins here, unlike --mod-overlay's hard failure on ambiguity, because the two copies
     # of this mod are the SAME mod and either one profiles identically — there is no wrong choice to
     # protect against, and MODS_DIR is scanned first so the local copy is the one taken.
     PROFILER_MOD_ID="${matches[0]%%|*}"
-    log "--profiler: Dubs Performance Analyzer '$PROFILER_MOD_ID' (${matches[0]#*|})"
-    log "--profiler: WARNING — the analyzer instruments every Harmony patch in this load. Timings from"
-    log "--profiler:           this run, probes included, are measured through an instrumented build"
-    log "--profiler:           and are not comparable with a run that did not pass --profiler."
+    log "profiler: Dubs Performance Analyzer '$PROFILER_MOD_ID' (${matches[0]#*|})"
+    log "profiler: WARNING — the analyzer instruments every Harmony patch in this load. Timings from"
+    log "profiler:           this run, probes included, are measured through an instrumented build"
+    log "profiler:           and are NOT comparable with a --no-profiler run. Pin timing baselines"
+    log "profiler:           with --no-profiler, and record the mode on the Probe step (pinnedUnder)."
 }
 
 if [[ $PROFILER -eq 1 ]]; then
     resolve_profiler_mod
+else
+    log "profiler: --no-profiler — this run is not instrumented and produces no cost tables."
 fi
 
 # Validate every install pair (both forms land here) before anything is locked or touched. The ':'
@@ -1275,6 +1310,15 @@ launch_rimworld() {
             harness_env=(RWTH_SCENARIO="$SCENARIO")
         fi
 
+        # The run's profiling mode, stated rather than inferred. RWTH_PROFILE=1 means "profile this
+        # run"; the mod then reports a table or a REASON per scenario, never silence. RWTH_PROFILE_SKIP
+        # carries a reason THIS script already established (the analyzer is not installed) so the mod
+        # does not have to guess between "absent from the machine" and "present but not loaded".
+        harness_env+=(RWTH_PROFILE="$PROFILER")
+        if [[ -n "$PROFILER_SKIP_REASON" ]]; then
+            harness_env+=(RWTH_PROFILE_SKIP="$PROFILER_SKIP_REASON")
+        fi
+
         env "${harness_env[@]}" RWTH_REPORT="$REPORT_PATH" \
             "$RIMWORLD/RimWorldLinux" --no-sandbox \
             "${quicktest_arg[@]}" \
@@ -1406,12 +1450,14 @@ report = json.load(open(sys.argv[1]))
 
 
 def print_scenario(scenario, indent="  "):
-    print(f"[run_test]{indent}scenario: {scenario.get('ScenarioName')}  pass={scenario.get('Pass')}")
+    print(f"[run_test]{indent}scenario: {scenario.get('ScenarioName')}  pass={scenario.get('Pass')}  "
+          f"profiled={scenario.get('Profiled', False)}")
     # A skip keeps Pass=true so a box without the DLC a scenario needs stays green, which makes this
     # line the only thing standing between "skipped" and a reader seeing pass=True over a scenario
     # that verified nothing. See Shared/ScenarioReport.cs.
     if scenario.get("Skipped"):
         print(f"[run_test]{indent}  SKIPPED: {scenario.get('SkipReason')}")
+    print_profiles(scenario, indent)
     for check in scenario.get("ProbeChecks", []):
         status = "PASS" if check.get("Pass") else "FAIL"
         print(f"[run_test]{indent}  {check.get('ProbeName')}: {status} "
@@ -1428,6 +1474,27 @@ def print_scenario(scenario, indent="  "):
     print_vision(scenario, indent)
     for err in scenario.get("Errors", []):
         print(f"[run_test]{indent}  ERROR: {err}")
+
+
+# Profiling produced either a cost table or a REASON there isn't one, and both have to be visible. A
+# profiled run that measured nothing must never print like one that measured zero: a zero is a number
+# that looks like a measurement, means "nothing was measured", and reads as "this mod is free". See
+# Shared/RunProfiling.cs.
+def print_profiles(scenario, indent):
+    reason = scenario.get("ProfileSkipReason")
+    if reason:
+        print(f"[run_test]{indent}  PROFILING SKIPPED: {reason}")
+
+    for table in scenario.get("Profiles", []):
+        totals = table.get("Totals") or {}
+        paused = table.get("PausedFrames", 0)
+        # The paused count rides on the headline rather than in the notes, because a window the colony
+        # slept through measures render cost only, and every tick-driven row in it reads as free.
+        paused_note = f", PAUSED for {paused}" if paused else ""
+        print(f"[run_test]{indent}  profile '{table.get('Name')}': {len(table.get('Rows', []))} row(s), "
+              f"{totals.get('AvgMsPerFrame')} ms/frame "
+              f"({totals.get('PercentOfSixtyFpsBudget')}% of a 60fps frame), "
+              f"{totals.get('Calls')} calls over {table.get('MeasuredFrames')} frame(s){paused_note}")
 
 
 # A vision assert nobody has judged does not fail the run (see Shared/VisionGate.cs), so it has to be
@@ -1463,7 +1530,10 @@ if "Scenarios" not in report:
     sys.exit(0 if report.get("Pass") else 1)
 
 scenarios = report.get("Scenarios", [])
-print(f"[run_test] suite: {len(scenarios)} scenario(s)  pass={report.get('Pass')}")
+print(f"[run_test] suite: {len(scenarios)} scenario(s)  pass={report.get('Pass')}  "
+      f"profiled={report.get('Profiled', False)}")
+if report.get("ProfileSkipReason"):
+    print(f"[run_test]   PROFILING SKIPPED: {report.get('ProfileSkipReason')}")
 # Printed before the per-scenario detail: an isolation shortfall changes how every result below it
 # should be read.
 for note in report.get("IsolationNotes", []):
