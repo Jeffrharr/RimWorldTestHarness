@@ -1514,6 +1514,31 @@ if rimworld_alive; then
 fi
 
 # ---------------------------------------------------------------------------
+# Step 6b: judge the scenario's delta asserts
+# ---------------------------------------------------------------------------
+# An Assert(kind=delta) step is written to the report half-filled: the mod resolved which two frames
+# to compare and what the scenario declared between them, but never opened the PNGs. It cannot —
+# Unity's flush timing, no decoder in the game, and image work inside the tick loop would slow down
+# the very thing being measured. So the measurement happens here, out of process, and the verdict is
+# written back into the same report.
+#
+# Runs BEFORE Step 7 rather than alongside the timelapse stitch, because the report is the gate: the
+# evaluator narrows each scenario's Pass, and Step 7 then prints and exits on the finished article.
+# One source of truth, no second verdict for the two to disagree about.
+#
+# Exit 0 and 1 are both a successful run of the gate (the verdict is in the report either way);
+# anything else means the gate itself broke, which must not be mistaken for "nothing failed".
+DELTA_TOOL="$SCRIPT_DIR/delta_gate.py"
+[[ -f "$DELTA_TOOL" ]] || fail "delta gate not found at $DELTA_TOOL"
+set +e
+python3 "$DELTA_TOOL" "$REPORT_PATH" --verbose 2>&1 | sed 's/^/[run_test]   /'
+delta_rc="${PIPESTATUS[0]}"
+set -e
+if [[ "$delta_rc" -gt 1 ]]; then
+    fail "delta asserts could not be evaluated (exit $delta_rc) — see above. The report's Pass does not account for them."
+fi
+
+# ---------------------------------------------------------------------------
 # Step 7: parse and print the report
 # ---------------------------------------------------------------------------
 # ScenarioReport/ProbeCheckResult/SuiteReport are serialized with System.Text.Json's default
@@ -1531,6 +1556,7 @@ import json, sys
 report = json.load(open(sys.argv[1]))
 
 
+# Returns how many delta asserts were never evaluated, which the caller folds into the exit code.
 def print_scenario(scenario, indent="  "):
     print(f"[run_test]{indent}scenario: {scenario.get('ScenarioName')}  pass={scenario.get('Pass')}  "
           f"profiled={scenario.get('Profiled', False)}")
@@ -1553,9 +1579,11 @@ def print_scenario(scenario, indent="  "):
     else:
         for path in shots:
             print(f"[run_test]{indent}  screenshot: {path}")
+    unevaluated = print_deltas(scenario, indent)
     print_vision(scenario, indent)
     for err in scenario.get("Errors", []):
         print(f"[run_test]{indent}  ERROR: {err}")
+    return unevaluated
 
 
 # Profiling produced either a cost table or a REASON there isn't one, and both have to be visible. A
@@ -1577,6 +1605,32 @@ def print_profiles(scenario, indent):
               f"{totals.get('AvgMsPerFrame')} ms/frame "
               f"({totals.get('PercentOfSixtyFpsBudget')}% of a 60fps frame), "
               f"{totals.get('Calls')} calls over {table.get('MeasuredFrames')} frame(s){paused_note}")
+
+
+# Delta asserts are a HARD gate, and Step 6b has already ANDed their verdicts into Pass, so this is
+# only reporting — with one exception. An assert still holding a null Result never reached the gate
+# at all, which Step 6b cannot itself report because it is the thing that did not run. That case is
+# printed as NOT EVALUATED and is deliberately fatal below: unlike a pending vision assert, nothing
+# is waiting on a human, so nothing will ever arrive to make it green.
+#
+# The declared inputs are printed on failure only. They are the answer to "the number is wrong, what
+# fed it?" — a question nobody asks about a passing check, and a long list nobody wants under one.
+def print_deltas(scenario, indent):
+    unevaluated = 0
+    for a in scenario.get("DeltaAsserts", []):
+        result = a.get("Result")
+        if result is None:
+            unevaluated += 1
+            print(f"[run_test]{indent}  delta {a.get('Id')}: NOT EVALUATED — "
+                  f"{a.get('Expect') or 'no verdict was ever written for this assert'}")
+        else:
+            state = "PASS" if result.get("Pass") else "FAIL"
+            print(f"[run_test]{indent}  delta {a.get('Id')}: {state} — {result.get('Reason')}")
+            if not result.get("Pass"):
+                print(f"[run_test]{indent}    frames: {a.get('BaselinePath')} -> {a.get('TargetPath')}")
+                for line in a.get("Inputs", []):
+                    print(f"[run_test]{indent}    declared: {line}")
+    return unevaluated
 
 
 # A vision assert nobody has judged does not fail the run (see Shared/VisionGate.cs), so it has to be
@@ -1608,8 +1662,8 @@ def print_vision(scenario, indent):
 
 
 if "Scenarios" not in report:
-    print_scenario(report, indent=" ")
-    sys.exit(0 if report.get("Pass") else 1)
+    unevaluated = print_scenario(report, indent=" ")
+    sys.exit(0 if report.get("Pass") and not unevaluated else 1)
 
 scenarios = report.get("Scenarios", [])
 print(f"[run_test] suite: {len(scenarios)} scenario(s)  pass={report.get('Pass')}  "
@@ -1620,8 +1674,7 @@ if report.get("ProfileSkipReason"):
 # should be read.
 for note in report.get("IsolationNotes", []):
     print(f"[run_test]   isolation: {note}")
-for scenario in scenarios:
-    print_scenario(scenario)
+unevaluated = sum(print_scenario(scenario) for scenario in scenarios)
 for err in report.get("Errors", []):
     print(f"[run_test]   SUITE ERROR: {err}")
 
@@ -1634,9 +1687,12 @@ skipped = [s.get("ScenarioName") for s in scenarios if s.get("Skipped")]
 if skipped:
     print(f"[run_test] skipped {len(skipped)}/{len(scenarios)} scenario(s), which verified NOTHING: "
           f"{', '.join(str(name) for name in skipped)}")
+if unevaluated:
+    print(f"[run_test] {unevaluated} delta assert(s) were never evaluated, so this run gated on "
+          f"LESS than it declared. See Runner/README.md, 'Delta asserts'.")
 # An empty Scenarios list must NOT pass — the mod's own gate (ReportComparer.AllPass(SuiteReport))
 # already refuses it, and this mirrors that rather than trusting the flag alone.
-sys.exit(0 if report.get("Pass") and scenarios else 1)
+sys.exit(0 if report.get("Pass") and scenarios and not unevaluated else 1)
 PYEOF
 report_rc=$?
 set -e

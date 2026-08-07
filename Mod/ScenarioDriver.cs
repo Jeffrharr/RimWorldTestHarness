@@ -388,6 +388,23 @@ public static class ScenarioDriver
             CurrentReport.VisionAsserts.Add(assert);
         }
 
+        if (outcome.DeltaAssert is DeltaAssert delta)
+        {
+            if (string.IsNullOrEmpty(delta.Id))
+                delta.Id = $"{CurrentReport.ScenarioName}#delta{CurrentReport.DeltaAsserts.Count}";
+
+            // Filled in here rather than in the action because only the driver can see the step list
+            // the assert sits in. What the two frames have in common cannot explain how they differ,
+            // so this records what the scenario declared BETWEEN them — see DeltaAssert.Inputs for
+            // the live failure that makes a bare ΔE with no record of its inputs a bad trade.
+            delta.Inputs = DeltaInputs.Between(
+                CurrentSpec.Steps,
+                step.Args[Shared.Steps.BuiltIn.AssertStep.BaselineArg].Trim(),
+                step.Args[Shared.Steps.BuiltIn.AssertStep.TargetArg].Trim());
+
+            CurrentReport.DeltaAsserts.Add(delta);
+        }
+
         if (outcome.WaitFrames > 0)
             _flushFramesRemaining = outcome.WaitFrames;
 
