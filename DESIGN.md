@@ -897,19 +897,91 @@ stops, the run stays green, and the report, `Player.log` and the runner's summar
 with the reason. A step that quietly did nothing would leave a green run that verified less than it
 claimed, which is the failure this repo exists to prevent.
 
-### It must not be in an ordinary run's load order
+### Profiling is a property of the run, not of a scenario
+
+This started as a `Profile` step a scenario asked for. That works, and it costs a save reload per
+scenario that uses it.
 
 The analyzer instruments by transplanting timing calls into the body of every Harmony-patched method
-in the load. In a run that has it active, *every* timing number the harness produces — `Probe` steps
-included — comes from a rewritten build. `Runner/run_test.sh --profiler` is therefore the only thing
-that activates it, and it is off by default.
+in the load, and nothing puts those bodies back short of its own `Harmony.UnpatchAll` — which runs
+asynchronously and calls `GC.Collect`, not something to do to a live run between scenarios. So
+activating it mid-run leaves `ScenarioResidue.Profiler`, outside `SoftResettable`, and a ten-scenario
+suite in which every scenario wanted a table would have gone from one boot to nine mid-suite reloads.
+That is the exact cost batching scenarios into one load exists to avoid.
 
-The same fact is why profiling declares `ScenarioResidue.Profiler`, outside `SoftResettable`. Nothing
-puts those method bodies back short of the analyzer's own `Harmony.UnpatchAll`, which runs
-asynchronously and calls `GC.Collect` — not something to do to a live run between scenarios. So a
-profiling scenario costs a save reload before whatever follows it. This is the residue with the least
-visible symptom and the worst consequence: the world looks untouched while every later timing in the
-load is quietly wrong.
+Starting the analyzer **once** — after the first map load, before the first scenario's first step —
+dissolves the problem rather than paying it. Every scenario in the run is then instrumented
+identically, from before any of them ran, so no scenario can contaminate the next one's numbers and
+`SuitePlanner.Plan` masks the `Profiler` flag out of every scenario's residue
+(`profilerAlreadyActive`). Resetting the analyzer's counters at each scenario's first step and
+harvesting at its last turns "one profiler for the run" into "one table per scenario", for free and
+with no scenario JSON. `Mod/Profiling/RunProfiler.cs` is the sequencing; `Shared/RunProfiling.cs` is
+every decision it makes.
+
+The window opens at the first **step**, not at the scenario boundary: a boundary burns settle frames,
+and on the first load the profiler's own warmup. Charging those to the scenario would put a load's
+worth of nothing into the divisor under every mean it reports.
+
+Profiling is therefore **on by default**, with `--no-profiler` to opt out. The numbers it produces —
+call counts, worst-frame spikes, per-patch attribution — are ones no probe can express at all, and a
+feature nobody remembers to switch on is a feature nobody uses. The explicit `Profile` step stays, for
+measuring exactly *this* window rather than the whole scenario, and because a `ProfileAssert` can only
+target a table that exists before the scenario ends.
+
+### A run that measured nothing must never look like one that measured zero
+
+The cost of default-on is that a profiled run does not always have anything to measure — and a table
+of zeroes is the worst possible way to say so. It is not a null result: it is a number that looks like
+a measurement, means "nothing was measured", and reads as "this mod is free". Zeroes survive review in
+a way an error never does.
+
+`RunProfiling` is therefore two pure classifiers rather than any arithmetic, and each returns a
+*reason*:
+
+- **`BeforeStartSkipReason`** — what is knowable before the analyzer is touched. The runner scanned the
+  disk, so it is the one that distinguishes "not installed on this machine" from "installed but
+  RimWorld did not load it"; its verdict travels in as `RWTH_PROFILE_SKIP` rather than being
+  re-derived in-game, because those are different problems with different fixes.
+- **`AfterWindowSkipReason`** — every way a window can turn out worthless: the run never became
+  interactive (a run that verifies XML patch behaviour and never reaches a map is a normal way to use
+  the harness, not an edge case), the scenario opened no window because it ran no steps, no frames
+  elapsed, fewer than 30 did, or nothing instrumented ran. The no-game branch is checked first because
+  it is the only one that names a *cause*; the rest describe symptoms downstream of it.
+
+The two dispositions differ and the classifier does not care: an explicit `ProfileStop` **fails** (the
+scenario asked to measure and got nothing), a run-level harvest records `ProfileSkipReason` (nobody
+asked). Sharing one classifier is what stops the two drifting on what "measured nothing" means.
+
+Two things a run-level table discloses rather than skips on. It does **not** force a game speed the way
+`ProfileStart` does — that would change what the scenarios it wraps around actually do — so the driver
+samples `TickManager.Paused` every frame and the table records `PausedFrames` plus a note. Half a
+measurement is still a measurement: the render-path rows are real, and skipping would throw them away
+while a silent table would let someone read an absent tick-driven row as a cheap one. And a run-level
+table has no `prefix` (nothing in its provenance says which mod the reader cares about), so `Rows` is
+capped at 200 — with `Totals` computed over every matched row *before* the cap, because totals derived
+from a truncated list would report a subsystem getting cheaper because the report got long.
+
+### The guardrail against comparing across modes
+
+Every timing number in a profiled run — ordinary `Probe` steps included — is measured through a
+rewritten build. Pin a probe's `expectedValue` from a profiled run, compare it against an unprofiled
+one, and the check moves for a reason that has nothing to do with the code under test. Default-on
+makes this *more* likely, not less: a value pinned before this change and re-checked by an ordinary
+run today is that mismatch by default.
+
+Every report therefore carries `Profiled`, printed by `run_test.sh` beside `pass=`. That alone is a
+weak mitigation, and knowingly so — it is the same weakness as relying on a human noticing `SKIPPED`,
+which this document already argues is not enough. So a `Probe` step can additionally record **which
+mode its own number was pinned under** (`pinnedUnder`: `any` | `profiler` | `no-profiler`), and a
+mismatch is an `Error` on the scenario — failing it, naming the probe, and naming the flag that fixes
+it. The precedent is `RWTH_ISOLATION`: a run that isolated less than it was asked to is an error here,
+not a note, because it looks identical to one that isolated correctly.
+
+`any` is the default because most probes read state — a season, a latitude, a glow level — and gating
+those on the profiler's presence would be noise that teaches people to switch the gate off. The cost
+of that choice is that the protection is opt-in per probe, which is a real limitation and is why the
+marker exists as well. A misspelled value is rejected at load rather than falling back to `any`: a
+guardrail an author believes they have and does not is worse than none.
 
 ### Driving a GUI mod headlessly
 
@@ -962,10 +1034,11 @@ is a division whose wrong answer is plausible rather than obviously broken.
   mean. Both caveats also ride in each table's `Notes`, because the moment someone misreads them is
   while looking at a report, not while reading this file.
 
-Two more things are refused rather than reported: a window in which the analyzer recorded no frames
-(`CollectStatistics` divides by that count, producing `NaN` averages that are both unserializable and
-indistinguishable from "free"), and a `prefix` matching no rows (an empty table reads the same way, and
-the likely cause is a renamed namespace or a mod missing from the run's `ModsConfig`).
+Two more things an explicit `Profile` step refuses rather than reports: a window in which the analyzer
+recorded no frames (`CollectStatistics` divides by that count, producing `NaN` averages that are both
+unserializable and indistinguishable from "free"), and a `prefix` matching no rows (an empty table
+reads the same way, and the likely cause is a renamed namespace or a mod missing from the run's
+`ModsConfig`).
 
 Tables themselves never gate `Pass`; only a `ProfileAssert` step does. The primary use is diffing the
 same table between builds, and a run going red because the machine was busy would train everyone to

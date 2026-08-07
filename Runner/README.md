@@ -140,19 +140,36 @@ already-installed copy for the duration of the run, then puts the original back:
 `--install <src-dir>:<dst-dir>` is the same thing with both paths spelled out, for anything that isn't
 a mod's assemblies.
 
-## `--profiler` — the one flag that changes what the run measures
+## Profiling — on by default, and `--no-profiler` to opt out
 
-`--profiler` adds Dubs Performance Analyzer (Workshop 2038874626) to the run's `ModsConfig`, so
-`Profile` steps have something to measure with. It is off by default and should stay that way for
-every run whose numbers you intend to compare against another run's.
+Every run adds Dubs Performance Analyzer (Workshop 2038874626) to its `ModsConfig` unless told not to.
+The analyzer is started once, after the first map load, and each scenario's counters are zeroed at its
+first step and harvested at its last — so every scenario in the report carries a per-patch cost table
+and every report carries `Profiled: true`. Nothing in a scenario asks for this.
 
-The reason is not politeness about load order. The analyzer instruments by **transplanting timing
-calls into the body of every Harmony-patched method in the load** — so in a run that has it active,
-every timing number the harness produces is a number measured through a rewritten build. That includes
-ordinary `Probe` steps that have nothing to do with profiling. Profile in one run; pin your baselines
-in runs that never saw the flag.
+It is on by default because profiling is now a property of the **run**. One analyzer started before
+the first scenario means every scenario is instrumented identically, from before any of them ran, so
+no scenario leaves a profiler behind for the next and a suite still costs one boot. The earlier
+opt-in design could not do that: a scenario that activated the analyzer left reload-only residue, and
+a ten-scenario profiling suite paid nine mid-suite reloads.
 
-Two things the flag does that are easy to get wrong by hand:
+**`--no-profiler` is the flag to pin timing baselines under.** The analyzer instruments by
+*transplanting timing calls into the body of every Harmony-patched method in the load*, so in a
+profiled run every timing number the harness produces was measured through a rewritten build —
+including ordinary `Probe` steps that have nothing to do with profiling. Pin baselines with
+`--no-profiler`, and put `pinnedUnder: "no-profiler"` on the `Probe` step so that a later run which
+would have compared across modes **fails** instead of quietly drifting. `Profiled` in the report is
+the marker; `pinnedUnder` is the part with teeth.
+
+**`--profiler`** still exists and changes exactly one thing: a missing analyzer becomes a hard failure
+rather than a warning, because you asked for it by name. Left to the default, a machine without the
+Workshop mod runs every scenario un-profiled and says so in each scenario's `ProfileSkipReason` — the
+runner prints `PROFILING SKIPPED: …` with the fix in it. A profiled run that measured nothing (no map
+was ever loaded, a scenario too short for a per-frame mean to mean anything, nothing instrumented ran)
+gets the same treatment, because a table of zeroes looks like a measurement and reads as "this mod is
+free".
+
+Two things the runner does that are easy to get wrong by hand:
 
 - **It reads the packageId off whichever copy is installed** instead of hardcoding one. The About.xml
   declares `Dubwise.DubsPerformanceAnalyzer.steam` — with a literal `.steam` — and RimWorld appends a
@@ -162,12 +179,17 @@ Two things the flag does that are easy to get wrong by hand:
 - **It loads immediately after `brrainz.harmony`**, ahead of the mods under test. The analyzer patches
   the `Harmony` constructor to record which mod owns which patch, so a mod that builds its Harmony
   instance before the analyzer loads has its patches attributed to nobody — the per-mod table comes
-  back missing exactly the rows you launched the run to look at. This is why it is a flag and not
-  "just pass it as `--mod`": a `--mod` lands after the required mods, which is too late.
+  back missing exactly the rows you launched the run to look at. This is why it is resolved here and
+  not "just passed as `--mod`": a `--mod` lands after the required mods, which is too late.
 
-Without the flag, a `Profile` step reports the scenario `SKIPPED` with the reason rather than silently
-recording nothing. See the main `README.md`, "Profiling", for the step reference and for how to read
-the resulting table without being misled by its percentage column.
+The run's mode reaches the game as `RWTH_PROFILE=1|0`, plus `RWTH_PROFILE_SKIP` carrying a reason this
+script already established. The reason is carried in rather than re-derived because the runner is the
+thing that scanned the disk: "not installed on this machine" and "installed but RimWorld did not load
+it" are different problems with different fixes, and the mod cannot tell them apart.
+
+With `--no-profiler`, an explicit `Profile` step reports the scenario `SKIPPED` with the reason rather
+than silently recording nothing. See the main `README.md`, "Profiling", for the step reference, the
+`pinnedUnder` guardrail, and how to read a table without being misled by its percentage column.
 
 ## Asset claims: nothing is swapped without being written down
 
