@@ -482,6 +482,52 @@ public static class SceneBuilder
         return null;
     }
 
+    // ----- SetSand ------------------------------------------------------------------------------
+
+    // Writes sand depth straight into the grid, bypassing accumulation entirely. Odyssey's desert
+    // sibling of LaySnow above, same reasons — see Shared/Steps/BuiltIn/SetSandStep.cs.
+    //
+    // SetSandAction has already checked map.sandGrid is non-null (it is only constructed when
+    // ModsConfig.OdysseyActive) before calling this, so this method assumes that same as LaySnow
+    // assumes snowGrid always exists.
+    //
+    // SandGrid.SetDepth already clamps to [0, MaxDepth], recomputes the cell's WeatherBuildupCategory
+    // and dirties the map mesh for that cell, so there is no separate redraw to trigger — unlike the
+    // baked-mesh cases (roof, terrain) this one maintains itself.
+    public static string? LaySand(Map map, SandPlan plan)
+    {
+        IntVec3 anchor = ResolveAnchor(plan, map);
+        CellRect rect = CellRect.CenteredOn(anchor, plan.Width, plan.Height);
+        float depth = (float)plan.Depth;
+
+        int laid = 0;
+        int outOfBounds = 0;
+
+        foreach (IntVec3 cell in rect)
+        {
+            if (cell.InBounds(map))
+            {
+                map.sandGrid.SetDepth(cell, depth);
+                laid++;
+            }
+            else
+            {
+                outOfBounds++;
+            }
+        }
+
+        if (laid == 0)
+            return $"laid no sand — the {plan.Width}x{plan.Height} rect at ({anchor.x},{anchor.z}) " +
+                   "lies entirely outside the map";
+
+        // Partly clipped is reported, not failed — same call as SetSnow's, SetTerrain's and
+        // SetRoof's.
+        if (outOfBounds > 0)
+            Log.Message($"RWTH: SetSand covered {laid} cells, {outOfBounds} were out of bounds");
+
+        return null;
+    }
+
     // ----- LookAt -----------------------------------------------------------------------------
 
     // JumpToCurrentMapLoc rather than PanToMapLoc: the pan animates over several frames, which a

@@ -693,6 +693,48 @@ public class ApiCompatibilityTests
         });
     }
 
+    // Sand is Odyssey's desert sibling of snow, same unreachable-through-gameplay story: nothing in
+    // vanilla accrues sand depth on a timescale a scenario can afford to wait out. The SetSand step
+    // writes the grid directly, so if either member below moves, the step silently becomes
+    // "photograph bare ground under a sand-titled scenario". Runs whether or not Odyssey is
+    // installed — this checks the API, not the licence; SetSandAction's own Skip-without-Odyssey
+    // branch is what handles a box that lacks the DLC.
+    [Test]
+    public void Map_sandGrid_FieldExists()
+    {
+        var type = GetType(_game, "Verse.Map");
+        Assert.That(type, Is.Not.Null);
+        var field = type!.Fields.SingleOrDefault(f => f.Name == "sandGrid");
+        Assert.That(field, Is.Not.Null,
+            "Map.sandGrid no longer exists — the SetSand step can't lay sand, and desert scenes become unfilmable again");
+        Assert.That(field!.FieldType.FullName, Is.EqualTo("Verse.SandGrid"),
+            "Map.sandGrid changed type — SceneBuilder.LaySand would stop compiling");
+    }
+
+    // SetDepth rather than AddDepth: the step is declarative ("this rect is under 0.6 of sand"), and
+    // it relies on SetDepth's own clamping, category recompute and mesh dirtying — same call as
+    // SnowGrid's above.
+    [Test]
+    public void SandGrid_SetDepthAndMaxDepth_Exist()
+    {
+        var type = GetType(_game, "Verse.SandGrid");
+        Assert.That(type, Is.Not.Null);
+        Assert.Multiple(() =>
+        {
+            Assert.That(
+                type!.Methods.SingleOrDefault(m =>
+                    m.Name == "SetDepth" && m.Parameters.Count == 2 &&
+                    m.Parameters[0].ParameterType.FullName == "Verse.IntVec3" &&
+                    m.Parameters[1].ParameterType.FullName == "System.Single"),
+                Is.Not.Null,
+                "SandGrid.SetDepth(IntVec3, float) no longer exists — the SetSand step can't work");
+            Assert.That(
+                type!.Fields.SingleOrDefault(f => f.Name == "MaxDepth"),
+                Is.Not.Null,
+                "SandGrid.MaxDepth no longer exists — SetSand's documented 0..1 depth range is no longer anchored to vanilla's own maximum");
+        });
+    }
+
     [Test]
     public void Map_roofGrid_FieldExists()
     {
