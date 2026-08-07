@@ -46,6 +46,10 @@ public static class ProfileMath
 
     // Builds the report table. `measuredFrames` is the analyzer's own count of recorded frames, NOT
     // the number the scenario asked for: everything below divides by it.
+    //
+    // The last three arguments are optional because they only apply to RUN-LEVEL tables (see
+    // Shared/RunProfiling.cs). An explicit Profile step forces a game speed and has no cap, so it
+    // passes none of them and gets exactly the table it always got.
     public static ProfileTable Build(
         string name,
         string entry,
@@ -53,10 +57,16 @@ public static class ProfileMath
         int requestedFrames,
         int measuredFrames,
         double frameMs,
-        IEnumerable<ProfileSample> samples)
+        IEnumerable<ProfileSample> samples,
+        int maxRows = int.MaxValue,
+        int sampledFrames = 0,
+        int pausedFrames = 0)
     {
         List<ProfileSample> all = samples?.ToList() ?? new List<ProfileSample>();
-        List<ProfileRow> rows = all
+        // Every matched row, uncapped. Totals come off THIS list; only what lands in the report is
+        // truncated, because a total over the surviving rows would understate a subsystem's cost by
+        // however much the cap happened to remove.
+        List<ProfileRow> matched = all
             .Where(s => MatchesPrefix(s.Label, prefix))
             .Select(s => Row(s, measuredFrames, frameMs))
             .OrderByDescending(r => r.AvgMsPerFrame)
@@ -70,19 +80,60 @@ public static class ProfileMath
             Prefix = prefix,
             RequestedFrames = requestedFrames,
             MeasuredFrames = measuredFrames,
+            SampledFrames = sampledFrames,
+            PausedFrames = pausedFrames,
             FrameMs = Round(frameMs, 4),
             FramesPerSecond = Round(Divide(1000.0, frameMs), 2),
             RowsBeforeFilter = all.Count,
-            Rows = rows,
+            RowsMatched = matched.Count,
+            Totals = Totals(matched, frameMs),
+            Rows = matched.Take(Math.Max(0, maxRows)).ToList(),
         };
 
-        table.TotalAvgMsPerFrame = Round(rows.Sum(r => r.AvgMsPerFrame), 4);
-        table.TotalPercentOfFrame = Round(Percent(table.TotalAvgMsPerFrame, frameMs), 3);
-        table.TotalPercentOfSixtyFpsBudget = Round(Percent(table.TotalAvgMsPerFrame, SixtyFpsFrameMs), 3);
         table.Notes.Add(CallCountNote);
         table.Notes.Add(PercentNote);
         table.Notes.Add(ProfilerOverheadNote);
+        AddConditionalNotes(table);
         return table;
+    }
+
+    // Notes that describe THIS window rather than the technique. Added last so the three standing
+    // caveats read the same in every table and the window-specific ones stand out under them.
+    private static void AddConditionalNotes(ProfileTable table)
+    {
+        if (table.RowsMatched > table.Rows.Count)
+            table.Notes.Add(RunProfiling.TruncationNote(table.Rows.Count, table.RowsMatched));
+
+        if (table.PausedFrames > 0)
+            table.Notes.Add(RunProfiling.PausedNote(table.PausedFrames, table.SampledFrames));
+    }
+
+    // The whole-table pseudo-row a ProfileAssert reads through label="*".
+    //
+    // Per-metric rather than a blanket sum, because summing a MAX would be nonsense: the worst frame
+    // for a subsystem is the worst frame any one of its patches had, not the sum of their individual
+    // worst frames (which were probably different frames). AvgUsPerCall is likewise total-time over
+    // total-calls rather than the mean of the rows' means, which would weight a method called twice the
+    // same as one called ten thousand times.
+    private static ProfileRow Totals(List<ProfileRow> rows, double frameMs)
+    {
+        double avgMs = Round(rows.Sum(r => r.AvgMsPerFrame), 4);
+        double totalMs = Round(rows.Sum(r => r.TotalMs), 3);
+        double calls = rows.Sum(r => r.Calls);
+
+        return new ProfileRow
+        {
+            Label = ProfileMetrics.TotalsLabel,
+            AvgMsPerFrame = avgMs,
+            MaxMsPerFrame = rows.Count == 0 ? 0 : rows.Max(r => r.MaxMsPerFrame),
+            TotalMs = totalMs,
+            Calls = calls,
+            CallsPerFrame = Round(rows.Sum(r => r.CallsPerFrame), 3),
+            MaxCallsPerFrame = rows.Count == 0 ? 0 : rows.Max(r => r.MaxCallsPerFrame),
+            AvgUsPerCall = Round(Divide(totalMs * 1000.0, calls), 2),
+            PercentOfFrame = Round(Percent(avgMs, frameMs), 3),
+            PercentOfSixtyFpsBudget = Round(Percent(avgMs, SixtyFpsFrameMs), 3),
+        };
     }
 
     // Empty prefix means "every profiled method in the load", which is thousands of rows of vanilla —
@@ -179,7 +230,9 @@ public static class ProfileMetrics
 
         if (label == TotalsLabel)
         {
-            value = ReadTotal(table, metric);
+            // Read off the stored Totals row rather than recomputed from table.Rows, which is capped.
+            // See ProfileTable.Totals.
+            value = ReadRow(table.Totals ?? new ProfileRow(), metric);
             error = null;
             return true;
         }
@@ -225,9 +278,19 @@ public static class ProfileMetrics
         }
 
         error = $"no profiled method matching '{label}' in profile table '{table.Name}' " +
-                $"({table.Rows.Count} rows matched prefix '{table.Prefix}')";
+                $"({table.Rows.Count} rows matched prefix '{table.Prefix}'){TruncationHint(table)}";
         return false;
     }
+
+    // A row the cap removed and a row that never ran produce the same "not found", and they need very
+    // different fixes. Said only when the table was actually truncated, so the common message stays
+    // short.
+    private static string TruncationHint(ProfileTable table) =>
+        table.RowsMatched > table.Rows.Count
+            ? $" — note this table lists only the {table.Rows.Count} most expensive of " +
+              $"{table.RowsMatched} rows, so a cheap method may have been dropped; " +
+              "name it in an explicit Profile step's prefix to see it"
+            : "";
 
     private static double ReadRow(ProfileRow row, string metric)
     {
@@ -245,29 +308,14 @@ public static class ProfileMetrics
         }
     }
 
-    // Totals are per-metric rather than a blanket sum, because summing a MAX would be nonsense: the
-    // worst frame for the subsystem is the worst frame any one of its patches had, not the sum of
-    // their individual worst frames (which were probably different frames).
-    private static double ReadTotal(ProfileTable table, string metric)
-    {
-        switch (metric)
-        {
-            case AvgMsPerFrame: return table.TotalAvgMsPerFrame;
-            case MaxMsPerFrame: return table.Rows.Count == 0 ? 0 : table.Rows.Max(r => r.MaxMsPerFrame);
-            case TotalMs: return table.Rows.Sum(r => r.TotalMs);
-            case Calls: return table.Rows.Sum(r => r.Calls);
-            case CallsPerFrame: return table.Rows.Sum(r => r.CallsPerFrame);
-            case MaxCallsPerFrame: return table.Rows.Count == 0 ? 0 : table.Rows.Max(r => r.MaxCallsPerFrame);
-            // The subsystem's total time over its total calls — deliberately NOT the mean of the rows'
-            // means, which would weight a method called twice the same as one called ten thousand times.
-            case AvgUsPerCall: return SafeDivide(table.Rows.Sum(r => r.TotalMs) * 1000.0, table.Rows.Sum(r => r.Calls));
-            case PercentOfFrame: return table.TotalPercentOfFrame;
-            default: return table.TotalPercentOfSixtyFpsBudget;
-        }
-    }
-
-    private static double SafeDivide(double numerator, double denominator) =>
-        denominator <= 0 ? 0 : numerator / denominator;
-
     public static string Format(double value) => value.ToString("0.####", CultureInfo.InvariantCulture);
+
+    // A one-line summary for Player.log and the runner's own output, so a table's headline number is
+    // readable without opening the JSON. Here rather than at either call site because the two would
+    // otherwise drift on which figure they consider the headline.
+    public static string Summarize(ProfileTable table) =>
+        $"{table.Rows.Count} row(s), {Format(table.Totals.AvgMsPerFrame)} ms/frame " +
+        $"({Format(table.Totals.PercentOfSixtyFpsBudget)}% of a 60fps frame) over " +
+        $"{table.MeasuredFrames} frame(s) at {Format(table.FramesPerSecond)} fps" +
+        (table.PausedFrames > 0 ? $", PAUSED for {table.PausedFrames} of them" : "");
 }

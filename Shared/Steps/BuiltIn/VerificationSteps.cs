@@ -13,11 +13,15 @@ public sealed class ProbeStep : IStepSpec
     public ScenarioResidue Residue => ScenarioResidue.None;
     public bool LiveCallable => true;
 
-    public bool TryValidate(IReadOnlyDictionary<string, string> args, out string? error)
-    {
-        error = null;
-        return true;
-    }
+    // Only `pinnedUnder` is checked, and only for spelling. The other three args are read by the
+    // driver, which has always parsed them at execution time; validating them here as well would give
+    // two checks that can disagree. A misspelled `pinnedUnder`, though, would silently disable the one
+    // guardrail the author wrote it down to get — "no-profier" would parse as "any" and gate nothing —
+    // so it fails at LOAD, before the run it was supposed to protect starts.
+    public bool TryValidate(IReadOnlyDictionary<string, string> args, out string? error) =>
+        ProbePinning.Validate(
+            args.TryGetValue(StepArgs.ProbePinnedUnder, out string? pinnedUnder) ? pinnedUnder : null,
+            out error);
 }
 
 // ScreenshotMode residue, not None: a hidden-UI capture sets vanilla's screenshotMode flag and

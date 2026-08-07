@@ -33,6 +33,13 @@ public static class StepArgs
     public const string ProbeExpectedValue = "expectedValue"; // float
     public const string ProbeTolerance = "tolerance"; // float
 
+    // Which profiling mode `expectedValue` was pinned under: any (default) | profiler | no-profiler.
+    // A mismatch against the run's own mode is an ERROR, not a note — profiling rewrites the body of
+    // every Harmony-patched method in the load, so a timing number pinned in one mode and checked in
+    // the other moves for reasons that have nothing to do with the code under test. Left at `any` for
+    // probes that read state rather than time, which is most of them. See Shared/RunProfiling.cs.
+    public const string ProbePinnedUnder = "pinnedUnder";
+
     public const string ScreenshotType = "Screenshot";
     public const string ScreenshotFileName = "fileName"; // written under the run's report folder
     public const string ScreenshotHideUi = "hideUi";     // bool, default "true" — see StepExecutor

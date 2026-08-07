@@ -47,11 +47,38 @@ public sealed class ScenarioReport
     // green, which is why the runner prints the pending count rather than rounding it off.
     public List<VisionAssert> VisionAsserts { get; set; } = new();
 
-    // Per-patch cost tables harvested by Profile/ProfileStop steps. Informational on their own — only
-    // a ProfileAssert step turns one of these numbers into something that gates Pass — because the
-    // primary use is diffing the same table between two builds, and a run that went red merely because
-    // the machine was busy would train everyone to ignore the colour.
+    // Per-patch cost tables: one written for every scenario of a profiled run (see
+    // Shared/RunProfiling.cs), plus one per explicit Profile/ProfileStop step. Informational on their
+    // own — only a ProfileAssert step turns one of these numbers into something that gates Pass —
+    // because the primary use is diffing the same table between two builds, and a run that went red
+    // merely because the machine was busy would train everyone to ignore the colour.
     public List<ProfileTable> Profiles { get; set; } = new();
+
+    // Whether Dubs Performance Analyzer was instrumenting the load while THIS scenario ran.
+    //
+    // THE GUARDRAIL. Profiling rewrites the body of every Harmony-patched method in the load, so every
+    // timing number in a profiled run — ordinary Probe steps included, not just profile tables — is
+    // measured through an instrumented build. Pin a probe's expectedValue from a profiled run, compare
+    // it against an unprofiled one, and the check moves for a reason that has nothing to do with the
+    // code under test. This flag is what makes that visible after the fact: it rides on every report,
+    // and Runner/run_test.sh prints it next to pass/fail.
+    //
+    // It is deliberately only HALF the mitigation, because a marker relies on a human noticing a line
+    // of output. The other half is ProbePinning: a Probe step may record which mode its own expected
+    // value was pinned under, and a mismatch is recorded as an Error here rather than a note in the
+    // margin. See Shared/RunProfiling.cs.
+    public bool Profiled { get; set; }
+
+    // Why a profiled run produced no table for this scenario. Non-null is a LOUD no-measurement: no map
+    // was ever loaded, no frames elapsed, the window was too short to mean anything, or nothing
+    // instrumented ran. Recorded — and printed by the runner — rather than left to a table of zeroes,
+    // which is a number that looks like a measurement, means "nothing was measured", and reads as
+    // "this mod is free". See RunProfiling.AfterWindowSkipReason for the full list of causes.
+    //
+    // Distinct from Skipped/SkipReason below, which are about the SCENARIO being inapplicable. A
+    // scenario whose profiling was skipped still ran, still asserted and still gates Pass as normal;
+    // only its cost table is absent.
+    public string? ProfileSkipReason { get; set; }
 
     // Set when a step declared the scenario inapplicable to this install rather than failed — today
     // only LandInOrbit without Odyssey. The remaining steps are abandoned and Pass is computed as

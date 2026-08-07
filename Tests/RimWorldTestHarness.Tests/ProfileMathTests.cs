@@ -74,9 +74,9 @@ public class ProfileMathTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(table.TotalAvgMsPerFrame, Is.EqualTo(0.502).Within(1e-9));
-            Assert.That(table.TotalPercentOfFrame, Is.EqualTo(17.633).Within(0.001));
-            Assert.That(table.TotalPercentOfSixtyFpsBudget, Is.EqualTo(3.012).Within(0.001));
+            Assert.That(table.Totals.AvgMsPerFrame, Is.EqualTo(0.502).Within(1e-9));
+            Assert.That(table.Totals.PercentOfFrame, Is.EqualTo(17.633).Within(0.001));
+            Assert.That(table.Totals.PercentOfSixtyFpsBudget, Is.EqualTo(3.012).Within(0.001));
         });
     }
 
@@ -187,7 +187,7 @@ public class ProfileMathTests
         {
             Assert.That(table.Rows, Is.Empty);
             Assert.That(table.RowsBeforeFilter, Is.Zero);
-            Assert.That(table.TotalAvgMsPerFrame, Is.Zero);
+            Assert.That(table.Totals.AvgMsPerFrame, Is.Zero);
         });
     }
 }
