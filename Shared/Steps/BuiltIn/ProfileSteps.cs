@@ -6,17 +6,24 @@ namespace RimWorldTestHarness.Shared.Steps.BuiltIn;
 // on top of the reflection adapter in Mod/Profiling/DubsAnalyzer.cs; everything a loader, the residue
 // analyzer or the suite planner needs is here, where it is testable without a game or a profiler.
 //
-// WHY THE ANALYZER IS OPTIONAL AND STAYS THAT WAY. Dubs Performance Analyzer is a Steam Workshop mod
-// (2038874626), so it cannot be a hard dependency of anything shipped here — and more importantly it
-// must NOT be in the load order of ordinary runs, because a profiler changes what those runs measure.
-// Every step below therefore reaches the analyzer only through reflection, and reports a SKIP (not an
-// error, and never silence) when it is absent. See Runner/run_test.sh's --profiler flag, which is the
-// only thing that puts the analyzer in a run's ModsConfig.
+// WHAT THESE STEPS ARE FOR NOW THAT PROFILING IS RUN-LEVEL. Every scenario in a profiled run already
+// gets a per-patch cost table with no JSON at all (Shared/RunProfiling.cs). These steps remain for the
+// case that cannot express: measuring exactly THIS window rather than the whole scenario — and for
+// asserting, since a ProfileAssert can only target a table that exists before the scenario ends.
+//
+// WHY THE ANALYZER IS STILL OPTIONAL. Dubs Performance Analyzer is a Steam Workshop mod (2038874626),
+// so it cannot be a hard dependency of anything shipped here: a machine without it must still be able
+// to run every scenario. Every step below therefore reaches it only through reflection, and reports a
+// SKIP (not an error, and never silence) when it is absent — which today means a --no-profiler run, or
+// a machine that has not subscribed.
 //
 // RESIDUE. Everything that activates the analyzer declares ScenarioResidue.Profiler, which is not
-// soft-resettable: a scenario that profiles forces a save reload before the next one, because
-// transplanted method bodies stay transplanted for the life of the process. That cost is the point —
-// the alternative is the following scenario's timings being quietly wrong.
+// soft-resettable: transplanted method bodies stay transplanted for the life of the process, so a
+// scenario that switched the profiler on mid-run would leave the NEXT one's timings quietly wrong.
+// SuitePlanner masks that flag when the run started the analyzer before the first scenario, because a
+// profiler that was already running when scenario 1 began is not something scenario 3 did to scenario
+// 4 — see SuitePlanner.Plan's profilerAlreadyActive. The flag still bites in a --no-profiler run,
+// which is exactly when it should.
 
 // Composite. Desugars at load time into ProfileStart / ProfileMeasure / ProfileStop; see
 // ProfileExpander for why the window has to be three steps rather than one.
