@@ -275,6 +275,39 @@ class BufferValidation(unittest.TestCase):
             frame_delta.compare_buffers(frame, frame, 4, 4, frame_delta.Region(0, 0, 0, 0), stride=1)
 
 
+class CommandLine(unittest.TestCase):
+    """Flag parsing, because the first version of it measured the wrong thing without saying so.
+
+    Hand-rolled splitting treated `--stride 4` as an empty --stride plus a third positional: the tool
+    printed its usage while having silently measured at the default stride. A measuring tool must not
+    have a way to quietly measure something other than what it was asked to.
+    """
+
+    def parse(self, argv):
+        return frame_delta.build_parser().parse_args(argv)
+
+    def test_space_separated_flags(self):
+        args = self.parse(["a.png", "b.png", "--stride", "4", "--region", "1,2,3,4"])
+        self.assertEqual((args.baseline, args.target, args.stride, args.region),
+                         ("a.png", "b.png", 4, "1,2,3,4"))
+
+    def test_equals_separated_flags(self):
+        args = self.parse(["a.png", "b.png", "--stride=8"])
+        self.assertEqual(args.stride, 8)
+
+    def test_defaults(self):
+        args = self.parse(["a.png", "b.png"])
+        self.assertEqual((args.stride, args.region, args.json), (2, frame_delta.FULL_REGION, False))
+
+    def test_a_missing_frame_argument_is_refused_rather_than_defaulted(self):
+        with self.assertRaises(SystemExit):
+            self.parse(["a.png"])
+
+    def test_an_unknown_flag_is_refused(self):
+        with self.assertRaises(SystemExit):
+            self.parse(["a.png", "b.png", "--stide", "4"])
+
+
 class Formatting(unittest.TestCase):
     def test_human_report_names_every_headline_number(self):
         stats = frame_delta.compare_buffers(

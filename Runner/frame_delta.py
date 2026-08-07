@@ -48,10 +48,10 @@ Tests/runner/test_frame_delta.py.
     python3 frame_delta.py BEFORE.png AFTER.png [--region full|X,Y,W,H] [--stride N] [--json]
 """
 
+import argparse
 import json
 import math
 import subprocess
-import sys
 
 # ---------------------------------------------------------------------------------------------
 # Region selection.
@@ -387,30 +387,28 @@ def format_report(stats):
     return "\n".join(lines)
 
 
+def build_parser():
+    # argparse rather than hand-rolled flag splitting, which is how this started: `--stride 4` parsed
+    # as an empty --stride plus a third positional, and the tool answered by printing its own usage
+    # while silently having measured at the default stride. A measuring tool must not have a way to
+    # quietly measure something other than what it was asked to.
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("baseline", help="the BEFORE frame")
+    parser.add_argument("target", help="the AFTER frame")
+    parser.add_argument("--region", default=FULL_REGION,
+                        help=f"'{FULL_REGION}' (default) or 'X,Y,W,H' in pixels")
+    parser.add_argument("--stride", type=int, default=2,
+                        help="sample every Nth pixel (default 2)")
+    parser.add_argument("--json", action="store_true",
+                        help="emit the raw statistics instead of the human report")
+    return parser
+
+
 def main(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
-    paths = [a for a in argv if not a.startswith("--")]
-    flags = [a for a in argv if a.startswith("--")]
-
-    stride = 2
-    region = FULL_REGION
-    as_json = False
-    for flag in flags:
-        name, _, value = flag.partition("=")
-        if name == "--stride":
-            stride = int(value) if value else 2
-        elif name == "--region":
-            region = value or FULL_REGION
-        elif name == "--json":
-            as_json = True
-        else:
-            raise SystemExit(f"unknown flag {flag!r}\n\n{__doc__}")
-
-    if len(paths) != 2:
-        raise SystemExit(__doc__)
-
-    stats = compare_files(paths[0], paths[1], region, stride)
-    print(json.dumps(stats, indent=2) if as_json else format_report(stats))
+    args = build_parser().parse_args(argv)
+    stats = compare_files(args.baseline, args.target, args.region, args.stride)
+    print(json.dumps(stats, indent=2) if args.json else format_report(stats))
 
 
 if __name__ == "__main__":
