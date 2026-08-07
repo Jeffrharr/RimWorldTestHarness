@@ -294,4 +294,81 @@ public class SuitePlannerTests
             Assert.That(error, Does.Contain("alwyas"));
         });
     }
+
+    // --- run-level profiling and the Profiler residue ---
+
+    private static ScenarioSpec Profiling(string name) => Scenario(name, StepArgs.ProfileType);
+
+    // The cost that made run-level profiling worth building. Profiler residue is not soft-resettable,
+    // so a suite in which every scenario profiles used to pay a full save reload between each pair.
+    [Test]
+    public void Plan_ProfilingScenariosReloadBetweenEachOtherWhenTheRunIsNotProfiled()
+    {
+        var plan = SuitePlanner.Plan(
+            new[] { Profiling("a"), Profiling("b"), Profiling("c") },
+            IsolationPolicy.Auto, reloadAvailable: true, profilerAlreadyActive: false);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(plan.Entries[0].Residue & ScenarioResidue.Profiler,
+                        Is.EqualTo(ScenarioResidue.Profiler));
+            // Not a reload — Profiler is outside SoftResettable but MapDirty is what forces one; the
+            // point is only that the flag survives to describe a scenario as dirty.
+            Assert.That(Actions(plan)[1], Is.Not.EqualTo(IsolationAction.None));
+        });
+    }
+
+    // With the analyzer started before scenario one, every scenario is instrumented identically from
+    // before any of them ran, so Profiler stops describing anything one scenario does to the next.
+    // This is what keeps a profiled suite at ONE boot.
+    [Test]
+    public void Plan_RunLevelProfilingMasksTheProfilerResidueEntirely()
+    {
+        var plan = SuitePlanner.Plan(
+            new[] { Profiling("a"), Profiling("b"), Profiling("c") },
+            IsolationPolicy.Auto, reloadAvailable: true, profilerAlreadyActive: true);
+
+        Assert.Multiple(() =>
+        {
+            foreach (var entry in plan.Entries)
+                Assert.That(entry.Residue & ScenarioResidue.Profiler,
+                            Is.EqualTo(ScenarioResidue.None), entry.ScenarioName);
+
+            Assert.That(plan.Errors, Is.Empty);
+        });
+    }
+
+    // Only Profiler is ever masked. Everything else describes a change a scenario genuinely made, and
+    // a profiled run is not a licence to stop isolating.
+    [Test]
+    public void Plan_RunLevelProfilingDoesNotMaskAnyOtherResidue()
+    {
+        var plan = SuitePlanner.Plan(
+            new[] { MapMutating("a"), ReadOnly("b") },
+            IsolationPolicy.Auto, reloadAvailable: true, profilerAlreadyActive: true);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(plan.Entries[0].Residue & ScenarioResidue.Map,
+                        Is.EqualTo(ScenarioResidue.Map));
+            Assert.That(Actions(plan)[1], Is.EqualTo(IsolationAction.ReloadSave));
+        });
+    }
+
+    // A Profile step also declares TimeSpeed residue (it forces a game speed). Masking Profiler must
+    // not take that with it, or the following scenario would run at whatever speed this one left.
+    [Test]
+    public void Plan_MaskingProfilerLeavesTheTimeSpeedItAlsoDirtied()
+    {
+        var plan = SuitePlanner.Plan(
+            new[] { Profiling("a"), ReadOnly("b") },
+            IsolationPolicy.Auto, reloadAvailable: true, profilerAlreadyActive: true);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(plan.Entries[0].Residue & ScenarioResidue.TimeSpeed,
+                        Is.EqualTo(ScenarioResidue.TimeSpeed));
+            Assert.That(Actions(plan)[1], Is.EqualTo(IsolationAction.SoftReset));
+        });
+    }
 }
