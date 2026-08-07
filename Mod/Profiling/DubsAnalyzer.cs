@@ -19,10 +19,12 @@ namespace RimWorldTestHarness.Mod.Profiling;
 // absence a value we can test for and report, which is the whole requirement: the step must no-op
 // LOUDLY, never silently.
 //
-// AND WHY THE ANALYZER IS NEVER IN AN ORDINARY RUN'S LOAD ORDER. A profiler changes what a run
-// measures — it rewrites the body of every Harmony-patched method in the load to add timing calls.
-// Runner/run_test.sh only puts it in ModsConfig when --profiler is passed, and a scenario that uses it
-// declares ScenarioResidue.Profiler so nothing after it shares the same game load.
+// AND WHAT LOADING IT COSTS. A profiler changes what a run measures — it rewrites the body of every
+// Harmony-patched method in the load to add timing calls, so every timing number a profiled run
+// produces, ordinary Probe steps included, comes from a rewritten build. Runner/run_test.sh puts it in
+// ModsConfig by DEFAULT (see Shared/RunProfiling.cs for why that trade is worth taking) and
+// --no-profiler is the run that answers "what does this cost uninstrumented". Mod/Profiling/RunProfiler
+// drives this adapter for the run as a whole; the Profile steps drive it for one window.
 //
 // WHAT WE DRIVE, AND WHY IT LOOKS LIKE Window_Analyzer.PreOpen. The analyzer has no API for
 // "profile headlessly"; its entry point is a window opening. Start() therefore mirrors PreOpen's
