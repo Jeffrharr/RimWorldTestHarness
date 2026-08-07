@@ -159,6 +159,16 @@ public static class ScenarioDriver
         if (LongEventHandler.ShouldWaitForEvent)
             return;
 
+        // Counted here — after the long-event guard, before any of the wait states below — so the
+        // sample set is exactly the frames the analyzer's own cycle also ran on, waits included. Whether
+        // the colony is PAUSED is the point of the sample: run-level profiling does not force a game
+        // speed, so a scenario that jumped the clock leaves ticks stopped and every tick-driven patch
+        // reading as free. The table says so rather than letting the zeroes speak.
+        // Find.TickManager is safe to dereference here: State.Running is only entered once
+        // ProgramState.Playing and a non-null CurrentMap are both true (see ReadyToRun), and a
+        // mid-suite reload puts the state back to WaitingForMap, which returns above.
+        RunProfiler.SampleFrame(Find.TickManager.Paused);
+
         if (_flushFramesRemaining > 0)
         {
             _flushFramesRemaining--;
@@ -194,9 +204,16 @@ public static class ScenarioDriver
             return;
 
         _state = State.Running;
+        // The one place that knows the game is genuinely interactive. RunProfiler needs it both as the
+        // cue to start (nothing can be instrumented, and no frame counted, before a Play scene exists)
+        // and as the fact it reports when a run finishes without ever getting here.
+        RunProfiler.NoteGameReached();
+
         // Give the game a few frames after FinalizeInit before the first step observes it. Cheap
         // insurance on top of the ProgramState gate, reusing the existing flush counter.
-        _flushFramesRemaining = _settleFramesAfterLoad;
+        // Run-level profiling adds its warmup on top on the first load only: the analyzer rewrites
+        // every patched method's body, and the first call of each pays JIT for the rewritten IL.
+        _flushFramesRemaining = _settleFramesAfterLoad + RunProfiler.Start();
         // Everything logged up to here is load noise, not this scenario's doing. Marked after the
         // load rather than at Begin so a mid-suite reload's own chatter is excluded too.
         StepHelpers.MarkLogBaseline();
@@ -284,6 +301,12 @@ public static class ScenarioDriver
             return;
         }
 
+        // The profiling window opens at the first step, not at the scenario boundary: a boundary burns
+        // settle frames (and, on the first load, the profiler's warmup), and charging those to the
+        // scenario would put a load's worth of nothing into the divisor under every mean it reports.
+        if (_stepIndex == 0)
+            RunProfiler.BeginScenario();
+
         ScenarioStep step = CurrentSpec.Steps[_stepIndex];
         _stepIndex++;
         RunStep(step);
@@ -335,20 +358,18 @@ public static class ScenarioDriver
             HarnessRuntime.ForcedLatitude = latitude;
 
         if (outcome.ProbeValue is float actual)
-        {
-            // The raw reading comes from the shared executor; the pass/fail comparison against this
-            // step's expected/tolerance is batch-specific and stays here.
-            string probeName = step.Args[StepArgs.ProbeName];
-            float expected = float.Parse(step.Args[StepArgs.ProbeExpectedValue]);
-            float tolerance = float.Parse(step.Args[StepArgs.ProbeTolerance]);
-            CurrentReport.ProbeChecks.Add(ReportComparer.CheckProbe(probeName, actual, expected, tolerance));
-        }
+            RecordProbeCheck(step, actual);
 
         if (outcome.ProbeCheck is ProbeCheckResult check)
             CurrentReport.ProbeChecks.Add(check);
 
         if (outcome.ProfileTable is ProfileTable profile)
+        {
             CurrentReport.Profiles.Add(profile);
+            // An explicit Profile step instruments the load exactly as run-level profiling does, so a
+            // scenario carrying one is a profiled scenario whether or not the run asked to be.
+            CurrentReport.Profiled = true;
+        }
 
         if (outcome.ScreenshotPath != null)
         {
@@ -377,9 +398,38 @@ public static class ScenarioDriver
         }
     }
 
+    // The raw reading comes from the shared executor; the pass/fail comparison against this step's
+    // expected/tolerance is batch-specific and stays here.
+    private static void RecordProbeCheck(ScenarioStep step, float actual)
+    {
+        string probeName = step.Args[StepArgs.ProbeName];
+
+        // The teeth behind ScenarioReport.Profiled. Profiling rewrites the body of every Harmony-patched
+        // method in the load, so an expectedValue pinned in one mode and checked in the other moves for
+        // reasons that have nothing to do with the code under test — and now that profiling is on by
+        // default, "pinned before this change, checked today" is that mismatch by default. A step that
+        // wrote down which mode its number came from gets an ERROR naming the flag that fixes it, rather
+        // than a marker somebody has to notice.
+        string? mismatch = ProbePinning.Mismatch(
+            step.Args.TryGetValue(StepArgs.ProbePinnedUnder, out string? pinnedUnder) ? pinnedUnder : null,
+            CurrentReport.Profiled || RunProfiler.Active,
+            probeName);
+
+        if (mismatch != null)
+        {
+            CurrentReport.Errors.Add(mismatch);
+            return;
+        }
+
+        float expected = float.Parse(step.Args[StepArgs.ProbeExpectedValue]);
+        float tolerance = float.Parse(step.Args[StepArgs.ProbeTolerance]);
+        CurrentReport.ProbeChecks.Add(ReportComparer.CheckProbe(probeName, actual, expected, tolerance));
+    }
+
     private static void FinishScenario()
     {
         ScenarioReport report = CurrentReport;
+        HarvestRunProfile(report);
         // Errors count toward Pass, not just probe checks: a scenario whose steps failed verified less
         // than it claims to, and with no Probe step at all an errors-ignoring gate reports Pass over
         // an empty check list. See ReportComparer's two-arg overload.
@@ -393,7 +443,8 @@ public static class ScenarioDriver
         // would otherwise see "pass=True" over a scenario that verified nothing.
         string skipSuffix = report.Skipped ? $" SKIPPED: {report.SkipReason}" : "";
         Log.Message(
-            $"RWTH: scenario finished: {report.ScenarioName} pass={report.Pass}{skipSuffix}{visionSuffix}");
+            $"RWTH: scenario finished: {report.ScenarioName} pass={report.Pass}{skipSuffix}{visionSuffix} " +
+            $"profiled={report.Profiled}");
 
         _scenarioIndex++;
         if (_scenarioIndex >= _specs.Count)
@@ -403,6 +454,38 @@ public static class ScenarioDriver
         }
 
         StartNextScenario();
+    }
+
+    // Closes this scenario's run-level profiling window and folds the result into its report: either a
+    // per-patch cost table, or a REASON there isn't one.
+    //
+    // Both outcomes are recorded, and that is the whole design. A profiled run that produced no
+    // measurable frames — no map ever loaded, a scenario shorter than the profiler's resolution,
+    // nothing instrumented reached — must not write a table of zeroes, because a zero here is not a
+    // null result: it is a number that looks like a measurement, means "nothing was measured", and
+    // reads as "this mod is free". The reason travels into the report, Player.log and the runner's
+    // summary, exactly like a scenario SKIP does.
+    private static void HarvestRunProfile(ScenarioReport report)
+    {
+        // Recorded before the harvest, because Profiled describes the load this scenario ran under
+        // rather than whether a table came out of it. A scenario whose window was too short was still
+        // measured through an instrumented build, and every timing probe in it still carries that.
+        if (RunProfiler.Active)
+            report.Profiled = true;
+
+        RunProfiler.ScenarioProfile profile = RunProfiler.EndScenario();
+        if (profile.SkipReason != null)
+        {
+            report.ProfileSkipReason = profile.SkipReason;
+            Log.Message($"RWTH: profiling produced nothing for '{report.ScenarioName}': {profile.SkipReason}");
+            return;
+        }
+
+        if (profile.Table != null)
+        {
+            report.Profiles.Add(profile.Table);
+            Log.Message($"RWTH: profile '{report.ScenarioName}': {ProfileMetrics.Summarize(profile.Table)}");
+        }
     }
 
     // Applies the planned isolation, then arms the next scenario. Only ever called for entries after
@@ -491,6 +574,8 @@ public static class ScenarioDriver
     {
         _state = State.Done;
         MarkUnreachedScenarios();
+        RecordRunProfilingMode();
+        RunProfiler.Stop();
         _suite.Pass = ReportComparer.AllPass(_suite);
         File.WriteAllText(_reportPath!, SuiteReportSerializer.Serialize(_suite, _suiteMode));
         // Redundant signal alongside the report file itself — Runner/run_test.sh polls for the
@@ -515,6 +600,37 @@ public static class ScenarioDriver
     {
         for (int i = _scenarioIndex; i < _suite.Scenarios.Count; i++)
             _suite.Scenarios[i].Errors.Add(SuiteReportBuilder.NotRunReason);
+    }
+
+    // The run-level half of the guardrail, written once at the end so it is present in BOTH report
+    // shapes — a single-scenario run serializes a bare ScenarioReport, and a marker that only existed
+    // in the suite wrapper would be a guardrail with a hole in it.
+    //
+    // The sweep at the bottom is what covers a run that never became interactive at all: those
+    // scenarios never reached FinishScenario, so nothing has written them a table or a reason, and
+    // "profiling was asked for and this report says nothing about it" is the one state that must not
+    // survive. RunProfiler classifies the empty case the same way it classifies every other.
+    private static void RecordRunProfilingMode()
+    {
+        _suite.Profiled = RunProfiler.Active;
+        _suite.ProfileSkipReason = RunProfiler.RunSkipReason;
+
+        if (!RunProfiler.Requested)
+            return;
+
+        for (int i = 0; i < _suite.Scenarios.Count; i++)
+            EnsureProfilingAccountedFor(_suite.Scenarios[i]);
+    }
+
+    private static void EnsureProfilingAccountedFor(ScenarioReport report)
+    {
+        bool alreadyAnswered = report.ProfileSkipReason != null || report.Profiles.Count > 0;
+        if (alreadyAnswered)
+            return;
+
+        report.ProfileSkipReason = RunProfiler.RunSkipReason ?? RunProfiling.AfterWindowSkipReason(
+            RunProfiler.GameReached, windowOpened: false, startError: null,
+            measuredFrames: 0, methodsThatRan: 0);
     }
 
     // The plan in words, into the report and (via the caller) Player.log. A suite that reloaded four

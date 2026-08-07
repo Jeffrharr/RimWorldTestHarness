@@ -69,6 +69,13 @@ public static class HarnessMod
             return;
         }
 
+        // Read here rather than lazily at first use, so that "was this run profiled?" is answered once,
+        // from the runner's stated intent, before any scenario has a chance to observe a different
+        // answer. See Shared/RunProfiling.cs; Runner/run_test.sh sets both variables.
+        Profiling.RunProfiler.Configure(
+            Read(Shared.RunProfiling.EnvEnabled) == "1",
+            Read(Shared.RunProfiling.EnvSkipReason));
+
         // Both Begin* calls set ScenarioDriver.Active synchronously, before any scene has loaded —
         // that's what makes Patch_ForceDevMode active in time for Verse.Root_Entry.Start()'s
         // autostart-save check, which runs later in the same boot sequence. See DESIGN.md for why that
@@ -92,10 +99,16 @@ public static class HarnessMod
             launchErrors.Add($"{EnvIsolation}: {policyError}");
 
         string? reloadSaveName = Read(EnvReloadSave);
-        SuitePlan plan = SuitePlanner.Plan(suite.Scenarios, policy, reloadAvailable: reloadSaveName != null);
+        // Run-level profiling starts the analyzer before the first scenario, so ScenarioResidue.Profiler
+        // no longer describes anything one scenario does to the next — and a suite of profiling
+        // scenarios stays at one boot instead of paying a reload each. See SuitePlanner.Plan.
+        SuitePlan plan = SuitePlanner.Plan(
+            suite.Scenarios, policy, reloadAvailable: reloadSaveName != null,
+            profilerAlreadyActive: Profiling.RunProfiler.Requested);
 
         Log.Message($"RWTH: suite of {suite.Scenarios.Count} scenario(s), isolation={policy}, " +
-                    $"reloadSave={reloadSaveName ?? "(none)"}");
+                    $"reloadSave={reloadSaveName ?? "(none)"}, " +
+                    $"profiling={(Profiling.RunProfiler.Requested ? "on" : "off")}");
 
         ScenarioDriver.BeginSuite(suite.Scenarios, plan, reportPath, reloadSaveName, launchErrors);
     }
