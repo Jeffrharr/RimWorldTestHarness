@@ -183,7 +183,8 @@ lighting would happily validate against.
 | `Probe` | `probeName`, `expectedValue`, `tolerance`, `pinnedUnder` | `probeName` must match a registered `IProbe.Name`. This is what decides pass/fail. `pinnedUnder` (`any` default \| `profiler` \| `no-profiler`) records which profiling mode `expectedValue` was measured under and **fails the scenario** on a mismatch — see "Profiling" below. |
 | `Screenshot` | `fileName`, `hideUi` | Written next to the report. `hideUi` defaults to `true` (blanks the HUD via RimWorld's screenshot mode). |
 | `SetFeature` | `featureName`, `enabled` | Flips a feature flag your mod registered. The point is A/B: screenshot with an effect off, flip it on, screenshot again — in one boot. |
-| `Assert` | `kind`, `images`, `prompt`, `expect`, `confidenceGate`, `logLines` | `kind: vision` — a rubric for an LLM judge over named screenshots plus the game's recent warnings/errors. Soft gate: only a *confident* fail blocks. See `Runner/README.md`, "Vision asserts". |
+| `Assert` | `kind`, plus that kind's own args | `kind: delta` — an automated pixel comparison between two of this scenario's screenshots. **Hard gate**, no LLM. Args: `baseline`, `target`, `direction`, `minDeltaE`, `maxDeltaE`, `region`, `stride`, `expect`, `id`. See `Runner/README.md`, "Delta asserts". |
+| | | `kind: vision` — a rubric for an LLM judge over named screenshots plus the game's recent warnings/errors. **Soft gate**: only a *confident* fail blocks. Args: `images`, `prompt`, `expect`, `confidenceGate`, `logLines`, `id`. See `Runner/README.md`, "Vision asserts". |
 | `ProfileAssert` | `table`, `label`, `metric`, `max` \| `min` \| `expectedValue`+`tolerance` | Checks one number out of a profile table (see "Profiling" below). Lands in the same `ProbeChecks` gate a `Probe` step does. |
 
 **Scene setup** — build something worth looking at, at runtime, instead of authoring it into the
@@ -631,8 +632,17 @@ The gate is stricter than "all probes passed", on purpose. A run fails if any pr
 if there were any errors at all** — because a scenario whose every step errored has zero probe checks,
 and "nothing was verified" otherwise reads exactly like "everything passed". Same reasoning at the
 suite level: an empty suite fails, and scenarios a mid-suite abort never reached are listed with an
-explicit "did not run" error rather than quietly omitted. Screenshots never affect `Pass`; they're a
-complementary review channel, not a gate.
+explicit "did not run" error rather than quietly omitted. A bare screenshot never affects `Pass`;
+it's a complementary review channel. What turns an image into a gate is an `Assert` step over it.
+
+`DeltaAsserts` are a **hard** gate, folded in after the game exits: the mod records which two frames
+to compare, `Runner/delta_gate.py` measures them as Step 6b and ANDs its verdicts into `Pass`. An
+assert it could not evaluate — no `ffmpeg`, a deleted frame — fails, and so does one that never
+reached the gate at all, because a declared check that did not run is not a check that passed. See
+`Runner/README.md`, "Delta asserts".
+
+`VisionAsserts` are a **soft** gate the other way round: only a *confident* fail blocks, and an
+unjudged one leaves the run provisionally green with the pending count printed out loud.
 
 ### Skipped scenarios
 

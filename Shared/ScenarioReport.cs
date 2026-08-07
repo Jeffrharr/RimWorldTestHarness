@@ -47,6 +47,13 @@ public sealed class ScenarioReport
     // green, which is why the runner prints the pending count rather than rounding it off.
     public List<VisionAssert> VisionAsserts { get; set; } = new();
 
+    // Automated pixel comparisons between two of this scenario's own screenshots. Written here with
+    // Result null — the mod declares them, Runner/delta_gate.py measures them after the game exits
+    // and ANDs its verdicts into Pass, so it is the LAST writer of this file. A report still holding
+    // a null Result never reached the gate, and the runner treats that as a failure rather than as
+    // pending: unlike a vision assert, nothing is waiting on a human. See Shared/DeltaAssert.cs.
+    public List<DeltaAssert> DeltaAsserts { get; set; } = new();
+
     // Per-patch cost tables: one written for every scenario of a profiled run (see
     // Shared/RunProfiling.cs), plus one per explicit Profile/ProfileStop step. Informational on their
     // own — only a ProfileAssert step turns one of these numbers into something that gates Pass —
