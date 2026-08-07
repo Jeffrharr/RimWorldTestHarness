@@ -30,6 +30,17 @@ public sealed class SuiteReport
     // (isolation=never). Informational — these never affect Pass — but recorded in the report so a
     // green suite says out loud which scenarios shared a world.
     public List<string> IsolationNotes { get; set; } = new();
+
+    // Whether the whole run was profiled. Duplicated onto every ScenarioReport rather than only living
+    // here, because a single-scenario run writes a bare ScenarioReport and the marker has to be present
+    // in both shapes — a guardrail that only exists in one of two report formats is a guardrail with a
+    // hole in it. See ScenarioReport.Profiled.
+    public bool Profiled { get; set; }
+
+    // Why the run as a whole was not profiled, when it was asked to be: the analyzer is not installed,
+    // or RimWorld did not load it. Per-scenario reasons (too few frames, nothing ran) live on each
+    // ScenarioReport instead.
+    public string? ProfileSkipReason { get; set; }
 }
 
 public static class SuiteReportBuilder

@@ -122,21 +122,38 @@ public sealed class ProfileTable
     // 1000 / FrameMs, so nobody reading the report has to do it. Zero when FrameMs is zero.
     public double FramesPerSecond { get; set; }
 
-    // The filtered rows' AvgMsPerFrame summed: the subsystem's total cost per frame. Worth having as
-    // its own number because a mod's cost is usually spread over several patches, and a probe covering
-    // one of them makes the other two thirds invisible.
-    public double TotalAvgMsPerFrame { get; set; }
+    // How many of this window's frames the game was PAUSED for, out of how many the driver sampled.
+    // Recorded because run-level profiling deliberately does not force a game speed — it must not
+    // change what the scenarios it wraps around do — so a scenario that jumped the clock leaves the
+    // colony paused and every tick-driven patch in this table reads as free through no merit of its
+    // own. See RunProfiling.PausedNote, which ProfileMath copies into Notes whenever this is non-zero.
+    // Zero/zero on a table from an explicit Profile step, which forces a speed instead.
+    public int PausedFrames { get; set; }
 
-    public double TotalPercentOfFrame { get; set; }
+    public int SampledFrames { get; set; }
 
-    public double TotalPercentOfSixtyFpsBudget { get; set; }
+    // Every metric summed/maxed over ALL matched rows, as a single pseudo-row labelled "*". This is
+    // what a ProfileAssert with label="*" reads, and it is stored rather than derived from Rows for one
+    // load-bearing reason: Rows is capped (RunProfiling.MaxRows) and totals derived from a truncated
+    // list would quietly describe only the rows that survived the cap. A subsystem's real cost silently
+    // shrinking because the report got long is exactly the plausible-wrong-number failure this file
+    // exists to prevent.
+    //
+    // Per-metric rather than a blanket sum: see ProfileMath.Totals for why summing a maximum would be
+    // nonsense.
+    public ProfileRow Totals { get; set; } = new();
 
     // How many profiled methods the analyzer had before `Prefix` was applied. A filter that matched
     // nothing is an error (see ProfileMath), and this is what makes "matched 3 of 812" legible.
     public int RowsBeforeFilter { get; set; }
 
+    // How many matched the prefix, before the row cap. Equal to Rows.Count unless the table was
+    // truncated; the gap is what TruncationNote reports.
+    public int RowsMatched { get; set; }
+
     // Sorted by AvgMsPerFrame descending, ties broken by Label, so two runs of the same scenario
-    // produce diffable JSON rather than whatever order a ConcurrentDictionary enumerated in.
+    // produce diffable JSON rather than whatever order a ConcurrentDictionary enumerated in. Capped at
+    // RunProfiling.MaxRows — see Totals for what the cap does NOT affect.
     public List<ProfileRow> Rows { get; set; } = new();
 
     // Caveats that belong WITH the numbers rather than in documentation nobody re-reads while looking

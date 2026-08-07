@@ -95,7 +95,15 @@ public static class SuitePlanner
     // reloadAvailable is false when the run has no save to reload — the -quicktest path generates its
     // colony at boot and never writes one. Passed in rather than inferred so this stays pure and so
     // the caller (HarnessMod, from RWTH_RELOAD_SAVE) owns the "is there a save?" question.
-    public static SuitePlan Plan(IReadOnlyList<ScenarioSpec> scenarios, IsolationPolicy policy, bool reloadAvailable)
+    //
+    // profilerAlreadyActive is the run-level profiling mode (see Shared/RunProfiling.cs). When it is
+    // true the analyzer was started once, after the first map load and before the first scenario's
+    // first step, so every scenario in the suite is instrumented identically from before any of them
+    // ran — and ScenarioResidue.Profiler stops describing anything one scenario can do to the next.
+    // Masking it here is what keeps a suite of profiling scenarios at ONE boot instead of one reload
+    // per scenario, which was the entire reason run-level profiling replaced the opt-in step.
+    public static SuitePlan Plan(IReadOnlyList<ScenarioSpec> scenarios, IsolationPolicy policy,
+                                 bool reloadAvailable, bool profilerAlreadyActive = false)
     {
         SuitePlan plan = new SuitePlan();
         if (scenarios.Count == 0)
@@ -127,18 +135,30 @@ public static class SuitePlanner
             RecordShortfall(plan, scenarios[i].Name, pending, before, policy);
             pending = ResidueAfter(pending, before);
 
+            ScenarioResidue left = ResidueOf(scenarios[i], profilerAlreadyActive);
             plan.Entries.Add(new SuiteEntryPlan
             {
                 ScenarioIndex = i,
                 ScenarioName = scenarios[i].Name,
                 Before = before,
-                Residue = ScenarioResidueAnalyzer.OfScenario(scenarios[i]),
+                Residue = left,
             });
 
-            pending |= ScenarioResidueAnalyzer.OfScenario(scenarios[i]);
+            pending |= left;
         }
 
         return plan;
+    }
+
+    // A scenario's residue as this run experiences it. The only thing subtracted is Profiler, and only
+    // when the run started the analyzer before the suite did anything: residue means "what this
+    // scenario leaves behind for the NEXT one", and a profiler that was already running when scenario 1
+    // began is not something scenario 3 did to scenario 4. Nothing else is ever masked — every other
+    // flag describes a change a scenario genuinely made.
+    private static ScenarioResidue ResidueOf(ScenarioSpec scenario, bool profilerAlreadyActive)
+    {
+        ScenarioResidue residue = ScenarioResidueAnalyzer.OfScenario(scenario);
+        return profilerAlreadyActive ? residue & ~ScenarioResidue.Profiler : residue;
     }
 
     private static IsolationAction ActionFor(ScenarioResidue pending, IsolationPolicy policy, bool reloadAvailable)
