@@ -88,10 +88,13 @@ public static class RunProfiling
         return null;
     }
 
+    // Worded to be true in BOTH situations it appears in, because the same sentence is reported by an
+    // explicit Profile step in a --no-profiler run (where the analyzer's absence is exactly what was
+    // asked for) and by a run that wanted it and did not get it.
     public const string NotLoadedReason =
         "Dubs Performance Analyzer is not loaded, so nothing was profiled. It is an optional Workshop " +
-        "mod (2038874626); Runner/run_test.sh adds it to a run's mod list by default and prints why " +
-        "when it cannot. Pass --no-profiler to stop asking for it.";
+        "mod (2038874626) that Runner/run_test.sh adds to a run's mod list by default — this run either " +
+        "passed --no-profiler, or the analyzer is not installed (the runner prints which).";
 
     // Everything a run-level window can turn out to be worth nothing for, classified AFTER the window
     // closed. Returns null when the harvested numbers are worth writing down.
