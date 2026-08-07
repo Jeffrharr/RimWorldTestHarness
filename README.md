@@ -180,7 +180,7 @@ lighting would happily validate against.
 
 | Type | Args | Notes |
 |---|---|---|
-| `Probe` | `probeName`, `expectedValue`, `tolerance` | `probeName` must match a registered `IProbe.Name`. This is what decides pass/fail. |
+| `Probe` | `probeName`, `expectedValue`, `tolerance`, `pinnedUnder` | `probeName` must match a registered `IProbe.Name`. This is what decides pass/fail. `pinnedUnder` (`any` default \| `profiler` \| `no-profiler`) records which profiling mode `expectedValue` was measured under and **fails the scenario** on a mismatch — see "Profiling" below. |
 | `Screenshot` | `fileName`, `hideUi` | Written next to the report. `hideUi` defaults to `true` (blanks the HUD via RimWorld's screenshot mode). |
 | `SetFeature` | `featureName`, `enabled` | Flips a feature flag your mod registered. The point is A/B: screenshot with an effect off, flip it on, screenshot again — in one boot. |
 | `Assert` | `kind`, `images`, `prompt`, `expect`, `confidenceGate`, `logLines` | `kind: vision` — a rubric for an LLM judge over named screenshots plus the game's recent warnings/errors. Soft gate: only a *confident* fail blocks. See `Runner/README.md`, "Vision asserts". |
@@ -219,10 +219,25 @@ and the screenshot flush and would space the captures unevenly.
 ### Profiling: per-patch cost and call count
 
 A probe times **one call** of a hot path. It never asks **how often that call happens**, and in
-practice the call count is the more interesting number. The `Profile` step runs a window of frames
-under [Dubs Performance Analyzer](https://steamcommunity.com/sharedfiles/filedetails/?id=2038874626)
-and writes its per-patch table into the run's report, so a scenario can pin three things no probe can
-express:
+practice the call count is the more interesting number.
+
+**Profiling is on by default and needs no scenario JSON.** Every run is launched with
+[Dubs Performance Analyzer](https://steamcommunity.com/sharedfiles/filedetails/?id=2038874626)
+in its mod list, the analyzer is started once after the first map load, and each scenario gets its
+counters zeroed at its first step and harvested at its last. Every scenario in the report therefore
+carries a per-patch cost table named `scenario`, and every report carries `Profiled: true`. Pass
+`--no-profiler` to opt out; if the analyzer is not installed, the run says so and continues
+un-profiled.
+
+Profiling is a property of the **run**, not of a scenario, and that is what makes it free: one
+analyzer started before the first scenario means every scenario is instrumented identically from
+before any of them ran, so no scenario leaves a profiler behind for the next one and a suite still
+costs one boot. (The earlier opt-in design left `ScenarioResidue.Profiler` behind, so a ten-scenario
+profiling suite paid nine mid-suite reloads.)
+
+The explicit `Profile` step is still there, for measuring **exactly this window** rather than the
+whole scenario — and it is the only way to `ProfileAssert` on a number, since a run-level table does
+not exist until the scenario has ended. It lets a scenario pin three things no probe can express:
 
 - **calls per frame** — catches a hook that starts firing twice as often after a refactor. Two patches
   costing the same per call but firing 3,700 and 7,400 times a window are telling you which one is
@@ -284,29 +299,80 @@ breaks on any signature change.
   the same row between builds. These caveats also ride in every table's `Notes`, because the moment
   someone misreads them is while looking at a report, not while reading this file.
 
-#### Opt-in, and loudly absent
+#### A run that measured nothing must never look like one that measured zero
 
-The analyzer is an optional Workshop mod and **must not be in an ordinary run's load order** — it
-rewrites the body of every Harmony-patched method in the load, so every timing number in a run that
-has it loaded, probes included, is measured through an instrumented build. `Runner/run_test.sh
---profiler` is the only thing that activates it, and it is off by default.
+A profiled run does not always have anything to measure, and a table of zeroes is the worst possible
+way to say so — it looks like a measurement, means "nothing was measured", and reads as "this mod is
+free". So the harness never writes one. Instead the scenario's report carries a `ProfileSkipReason`,
+which `run_test.sh` prints as `PROFILING SKIPPED: …`, for each of:
 
-Without it, `Profile` **skips the scenario** — the same path `LandInOrbit` takes without Odyssey. The
-run stays green, and the report, `Player.log` and the runner's summary all say `SKIPPED` with the
-reason. That is deliberate: a step that quietly did nothing would leave a green run that verified less
-than it claimed. Put `Profile` steps in their **own scenario** for the same reason the skip is
-scenario-wide.
+- **the analyzer is not installed**, or is installed and RimWorld did not load it (different problems,
+  different fixes, different messages — the runner scanned the disk, so it is the one that says which);
+- **the run never became interactive** — no map had loaded when it finished. A run that verifies XML
+  patch behaviour and never reaches a map is a normal way to use the harness, and it gets a reason
+  rather than a table;
+- **the scenario ran no steps**, so no window was opened;
+- **no frames elapsed**, or **fewer than 30 did** — a per-frame mean over a three-frame scenario is one
+  frame's noise wearing an average's clothes. Add a `Wait`, or use an explicit `Profile` step;
+- **nothing instrumented ran** during the scenario.
 
-Profiling dirties `ScenarioResidue.Profiler`, which requires a reload — transplanted method bodies
-stay transplanted for the life of the process, so without the reload the *next* scenario's timings
-would be quietly wrong.
+The scenario still runs, still asserts and still gates `Pass` as normal. Only its cost table is absent.
 
-`Scenarios/profile_harness_patches.json` profiles the harness's own patches and needs no mod under
-test:
+Two more things a run-level table discloses rather than hides. Run-level profiling deliberately does
+**not** force a game speed — it must not change what the scenarios it wraps around do — so a scenario
+that jumped the clock leaves the colony paused, every tick-driven patch reads as free, and the table
+records `PausedFrames` plus a note saying so. (An explicit `Profile` step forces `timeSpeed: normal`
+instead, which is the right answer when you control the window.) And a run-level table has no `prefix`
+filter, so it is capped at the 200 most expensive rows — with `Totals` computed over *all* matched rows
+before the cap, and a note when rows were dropped.
+
+#### The guardrail: `Profiled`, and `pinnedUnder`
+
+Profiling rewrites the body of every Harmony-patched method in the load, so every timing number in a
+profiled run — ordinary `Probe` steps included, not just profile tables — is measured through an
+instrumented build. The failure this creates: pin a probe's `expectedValue` from a profiled run,
+compare it against an unprofiled one, and the check moves for a reason that has nothing to do with the
+code under test. Now that profiling is the default, "pinned before this change, checked today" is that
+mismatch by default.
+
+Every report therefore carries `Profiled: true|false`, and `run_test.sh` prints it next to `pass=`.
+That is the weak half of the mitigation — it relies on someone noticing a line of output. The strong
+half is that a `Probe` step can record **which mode its own number was pinned under**, and a mismatch
+is an error that fails the scenario:
+
+```json
+{ "type": "Probe",
+  "args": { "probeName": "aurora_curtain_cost", "expectedValue": "0.42", "tolerance": "0.05",
+            "pinnedUnder": "no-profiler" } }
+```
+
+`pinnedUnder` is `any` (default), `profiler` or `no-profiler`. The default is `any` because most probes
+read state — a season, a latitude, a glow level — and gating those on the profiler's presence would be
+noise that teaches people to switch the gate off. Put it on **timing** probes. A misspelling fails at
+load rather than silently parsing as `any`, because a guardrail you believe you have and don't is worse
+than none.
+
+Pin timing baselines with `--no-profiler`, and declare `pinnedUnder: "no-profiler"` so the run that
+would have compared them across modes fails instead of drifting.
+
+#### Running it
+
+`Scenarios/profile_harness_patches.json` profiles the harness's own patches with an explicit window
+and asserts on it; it needs no mod under test:
 
 ```bash
-./Runner/run_test.sh --profiler Scenarios/profile_harness_patches.json
+./Runner/run_test.sh Scenarios/profile_harness_patches.json      # profiled: the default
+./Runner/run_test.sh --no-profiler Scenarios/spawn_pawns.json    # not instrumented
+./Runner/run_test.sh --profiler Scenarios/spawn_pawns.json       # fail if not installed
 ```
+
+`--profiler` differs from the default in exactly one way: a missing analyzer becomes a hard failure
+instead of a warning, because you asked for it by name.
+
+Without the analyzer, an explicit `Profile` step **skips the scenario** — the same path `LandInOrbit`
+takes without Odyssey. The run stays green, and the report, `Player.log` and the runner's summary all
+say `SKIPPED` with the reason. Put `Profile` steps in their **own scenario** for the same reason the
+skip is scenario-wide.
 
 A live run of it, for calibration — and for what the extra columns buy you:
 
@@ -489,7 +555,8 @@ authored scenarios can't overwrite each other's images.
 | `--no-teardown` | Leave symlinks / `ModsConfig` / `autostart.rws` in place for post-mortem debugging. |
 | `--delete-frames` | Delete timelapse PNGs once stitched into video. |
 | `--without-dlc <packageId>` | Leave an installed DLC out of this run's `ModsConfig` (e.g. `ludeon.rimworld.odyssey`). Repeatable. For exercising a scenario's skip-without-the-DLC path on a machine that owns the DLC — otherwise that branch is code nobody can run. |
-| `--profiler` | Activate Dubs Performance Analyzer (Workshop 2038874626) for this run, so `Profile` steps have something to measure with. **Off by default and meant to stay that way** — it instruments every Harmony patch in the load, so every timing number in the run, probes included, comes from an instrumented build. Use it for the run that answers a performance question, never for the pinned run you compare against. Fails if the analyzer is not installed. |
+| `--profiler` | Activate Dubs Performance Analyzer (Workshop 2038874626) for this run. **On by default**; passing it explicitly only changes one thing — a missing analyzer becomes a hard failure instead of a warning, because you asked for it by name. |
+| `--no-profiler` | Leave the analyzer out. The flag to pin timing baselines under: the analyzer instruments every Harmony patch in the load, so every timing number in a profiled run, probes included, comes from an instrumented build. Record the mode on the `Probe` step (`pinnedUnder`) so a cross-mode comparison fails the run instead of drifting. |
 | `--print-config` | Print every path the run would use and exit — touching, locking, and creating nothing. |
 
 `--without-dlc` deactivates rather than uninstalls, which is the right lever: `ModsConfig.<Dlc>Active`
@@ -521,14 +588,20 @@ The report is JSON in `Runner/reports/`. A single scenario:
 }
 ```
 
-A scenario that profiled also carries a `Profiles` array — one table per `Profile`/`ProfileStop` step,
-with a row per patch and the caveats in `Notes`:
+Every scenario also carries `Profiled` — whether the analyzer was instrumenting the load while it ran
+— and either a `Profiles` array or a `ProfileSkipReason` saying why there isn't one. A profiled run
+writes one `scenario` table per scenario automatically, plus one per explicit `Profile`/`ProfileStop`
+step:
 
 ```json
+"Profiled": true,
 "Profiles": [
   { "Name": "aurora", "Prefix": "CelestialLighting",
-    "MeasuredFrames": 600, "FrameMs": 2.847, "FramesPerSecond": 351.25,
-    "TotalAvgMsPerFrame": 0.502, "TotalPercentOfSixtyFpsBudget": 3.012,
+    "MeasuredFrames": 600, "SampledFrames": 601, "PausedFrames": 0,
+    "FrameMs": 2.847, "FramesPerSecond": 351.25,
+    "RowsBeforeFilter": 812, "RowsMatched": 3,
+    "Totals": { "Label": "*", "AvgMsPerFrame": 0.502, "Calls": 14904,
+                "PercentOfSixtyFpsBudget": 3.012 },
     "Rows": [
       { "Label": "CelestialLighting.Patch_GameConditionManager:Postfix",
         "AvgMsPerFrame": 0.453, "MaxMsPerFrame": 2.999, "Calls": 3738,
@@ -539,10 +612,16 @@ with a row per patch and the caveats in `Notes`:
 ]
 ```
 
+`Totals` is the whole-table pseudo-row a `ProfileAssert` with `label: "*"` reads. It is stored rather
+than derived from `Rows` because `Rows` is capped: totals recomputed from a truncated list would report
+a subsystem getting cheaper because the report got long.
+
 Tables are **informational** — only a `ProfileAssert` step turns one of these numbers into something
 that gates `Pass`. The primary use is diffing the same table between two builds, and a run going red
 because the machine was busy would train everyone to ignore the colour. A `ProfileAssert` records an
-ordinary `ProbeCheckResult` with a `Comparison` of `within`, `atMost` or `atLeast`.
+ordinary `ProbeCheckResult` with a `Comparison` of `within`, `atMost` or `atLeast`. It can only target
+a table an explicit `Profile`/`ProfileStop` step produced — a run-level table does not exist until
+after the scenario's last step has run.
 
 A suite wraps one unchanged `ScenarioReport` per scenario in a `SuiteReport` with `Pass`, `Errors`,
 and `IsolationNotes`; you tell the two apart by the presence of a `Scenarios` key. The single-scenario
