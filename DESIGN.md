@@ -1047,6 +1047,76 @@ one-sided forms exist because performance assertions almost always are — expre
 `expectedValue: 0.5, tolerance: 0.5` is a gate nobody writes twice. That is what `ProbeCheckResult`
 gained a `Comparison` field for.
 
+## Asking a stalled run what it is doing
+
+A run has always been able to end in a way that explains nothing. The report never arrives, the
+timeout names `Player.log`, and the log is a record of the past — it cannot say what the game is
+doing *now*. So a stall is diagnosed by deletion: re-run with pieces removed until it stops stalling.
+That is how a 900s timeout in a sibling repo was narrowed to `FastForward`/preset/`Screenshot`, and it
+is why a hang under memory pressure is indistinguishable from "your last edit broke it" for the first
+hour.
+
+The missing capability is a channel into a game that is no longer cooperating. `--bridge` borrows
+one: **RimBridgeServer** (Workshop 3727949765) runs a [GABP](https://github.com/pardeike/GABP) server
+inside RimWorld and exposes ~125 tools over it. Same pattern as profiling above — someone else's
+optional Workshop mod, doing a job we are not going to rebuild — with the same consequences.
+
+### The runner keeps the launch
+
+The obvious integration is [GABS](https://github.com/pardeike/GABS), upstream's host-side companion,
+and it is the right tool for driving a game from an MCP client. It is the wrong tool inside the
+runner, because its job is to start and supervise the game process, and that is the one job this
+runner cannot delegate: "The lock has to cover the assets, not just the run" above is a whole section
+about why. A second supervisor launching RimWorld would boot the machine's real mod list outside the
+`flock`, past the ledger, with none of the minimal-`ModsConfig` guarantees that make a run's numbers
+attributable to a known build.
+
+What GABS actually contributes is choosing a port and a token — and the contract for that is two
+environment variables the mod reads from its own process (`GABP_SERVER_PORT`, `GABP_TOKEN`). The
+runner sets both on the launch line. `Runner/gabp.py` is then a plain GABP client: TCP, LSP framing,
+`session/hello`, `tools/call`.
+
+This is additive rather than exclusive. A GABS entry consumes the *same* two variables, so it can
+attach to a game this runner launched; speaking GABP directly is what made the endpoint deterministic
+enough for that to work.
+
+### Being told the endpoint, not discovering it
+
+Upstream's documented standalone path is to read `[RimBridge] Bridge token: …` out of the log. That is
+a race against a game that may already be wedged — the log's last line is not guaranteed flushed —
+and it fails exactly when the feature is wanted. Pinning both values at launch means the endpoint is
+known before the game has finished booting, and it is written to `<report>-bridge.json` *before* the
+runner waits for the handshake, so a post-mortem still has it when the wait times out.
+
+### Timeouts as measurement
+
+The bridge marshals tool bodies onto RimWorld's main thread, for the same reason our own live channel
+does. Socket accept and handshake are answered off it. So the three outcomes separate cleanly, and
+`gabp.probe` reports them as three states rather than one boolean: no connection means the process is
+gone; handshake-but-no-tools means the main thread is wedged; tools answering means the stall is above
+us, in the scenario. Collapsing those into "the bridge didn't respond" would throw away the only part
+of the answer that narrows anything.
+
+### Prefer their tools to new probes of ours
+
+The dump asks for state we could have written probes for — UI state, letters, alerts, camera, game
+tick. Writing those probes would be duplicating a maintained surface with an unmaintained one, and
+they would be unavailable in precisely the situation that motivates them (a probe runs inside the
+scenario driver, which is the thing that has stopped).
+
+Two details make the borrowed surface safe to depend on. The dump intersects its wanted list against
+`tools/list`, so an upstream rename reads as a named absence rather than a wall of unknown-tool
+errors. And every tool is attempted independently with its failure recorded in place, because the
+failure *pattern* is itself the finding: when the bridge raises a blocking attention item, ordinary
+`rimworld/*` calls are held while `rimbridge/*` diagnostics stay answerable, so a dump where only the
+first group answered has diagnosed itself.
+
+The exposure that remains is field names. A renamed field does not break the client; it makes the
+summary line quietly stop saying anything, which for a diagnostic is worse than crashing.
+`Tests/fixtures/live_bridge_dump.json` is a real capture from a running game and the tests assert
+every tool name and every field the summary reads against it — the first version of that summary was
+written from guesswork and matched nothing in the real payload.
+
 ## API compatibility tests
 
 `Tests/RimWorldTestHarness.ApiTests/` (Mono.Cecil, pattern:
