@@ -200,6 +200,7 @@ still reports success). `PlaceThings` / `SetTerrain` / `SpawnPawn` also take `cl
 | `SetRoof` | `def`, `width`, `height` | Paints a rectangle of a `RoofDef` (`RoofConstructed`, `RoofThin`, …), or strips roof where `def` is `None`. No `clear` — roofing destroys nothing. Roof is the one map state no other step could produce: the game only ever roofs a cell as a consequence of *play*, so a scenario that spawns walls otherwise gets an unroofed shell. Roof is painted over whatever stands in the rect, walls included, which is how you build an **eave** — roofed cells no wall encloses. Defaults to 7x7, deliberately smaller than `SetTerrain`'s 40x40. |
 | `SetSnow` | `depth`, `width`, `height` | Lays snow over a rectangle by writing depth straight into the grid: `depth` is 0..1 (0 clears, 1 is vanilla's `SnowGrid.MaxDepth`), default 1 over 40x40. Snow is an *accumulation*, not a weather state — `SetWeather SnowHard` only starts flakes falling and depth then grows as a function of the map's temperature, so on a warm tile it never arrives at all. Without this step a snowy scene is unfilmable except by swapping biome and burning minutes of `FastForward`, which still fails above freezing. |
 | `SetSand` | `depth`, `width`, `height` | Odyssey's desert sibling of `SetSnow`, same shape and same reason: nothing in vanilla accrues sand depth on a timescale a scenario can afford to wait out. Requires the Odyssey DLC — `Map.sandGrid` is only constructed when `ModsConfig.OdysseyActive`, so on a run without it the step **skips** (not fails) rather than painting an unrelated mod's install red. |
+| `RaiseTestDialog` | `kind` | **Harness self-test only.** Deliberately puts a blocking vanilla modal on the window stack — `kind: name` raises the two-field colony/faction naming prompt, `kind: messagebox` a paused message box — so the dialog guard below can be *demonstrated* rather than argued for. Nothing a mod author writes needs this. |
 | `LookAt` | `zoom` | Aims the camera at the anchor. Omit `zoom` to keep the current one. |
 | `SpawnPawn` | `kind`, `faction`, `gender`, `hediffs`, `count`, `spacing`, `clear` | Generates pawns in a row along +x from the anchor. `kind` is a `PawnKindDef` defName (`Muffalo`, `Colonist`, `Pirate`). `faction` is `wild` (default, no faction — animals/wild men), `player` (your colony), or `hostile` (a deterministic enemy faction). `gender` is `male`/`female` (omit for random). `hediffs` applies health conditions: `"Flu:0.4; MissingBodyPart@Leg; BionicArm@Arm"` — each is a `HediffDef`, optionally `@BodyPartDef` to target a part and/or `:severity`; an unknown def or a part the race lacks fails the step before any pawn spawns. `count` defaults to 1, `spacing` to 2. `clear` (default false) bulldozes the spawn cells first. Any cell that still can't take a pawn is reported, not silently skipped. |
 
@@ -729,6 +730,27 @@ session and break the next launch through Steam. Caveat: Steam sometimes refuses
 fails, subscribe through the in-game Workshop UI instead.
 
 ## Gotchas
+
+- **Blocking modals are suppressed while a scenario runs, and every one is reported.** RimWorld raises
+  the colony/faction naming prompt on its own schedule, and mods raise faction pickers and error
+  boxes. `Dialog_GiveName` sets `forcePause = true` and `closeOnCancel = false`, so it stops the tick
+  clock and cannot be dismissed with Escape — a `FastForward` then waits for a `TicksGame` target that
+  can never arrive and the run dies on the 900s timeout, with the last log line being whatever
+  unrelated step ran before it. That cost three runs and a long bisect before it was understood.
+
+  A Harmony prefix on `WindowStack.Add` now refuses such a window before it is ever stacked (so
+  nothing pauses and nothing lands in a `Screenshot`), and a per-frame sweep catches any that were
+  already up before the scenario went `Active`. Naming dialogs are *resolved* rather than dropped —
+  their `Named`/`NamedSecond` hooks fire with the names the dialog generated for itself — because
+  dropping one leaves the thing unnamed and the game free to ask again later.
+
+  Three constraints worth knowing: it is gated on a scenario actually running, so a harness install
+  never eats a real player's dialogs; harness-owned windows are never touched; and only *blocking*
+  windows qualify, so a main tab a scenario opened on purpose stays put. **Every suppression is
+  recorded** in `ScenarioReport.DismissedDialogs` and printed by the runner — a harness that silently
+  clicks OK on anything the game asks is one that could hide a mod raising an error dialog every tick,
+  which would present as a perfectly clean run. `Scenarios/dialog_guard.json` proves it works by
+  raising the real dialogs itself.
 
 - **Screenshots need a real GPU-rendered frame** — the runner deliberately does not pass
   `-batchmode`/`-nographics`.

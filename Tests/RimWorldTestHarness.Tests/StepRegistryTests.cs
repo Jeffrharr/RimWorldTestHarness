@@ -34,6 +34,9 @@ public class StepRegistryTests
             LandInOrbitStep.StepType,
             StepArgs.ProfileType, StepArgs.ProfileStartType, StepArgs.ProfileMeasureType,
             StepArgs.ProfileStopType, StepArgs.ProfileAssertType,
+            // Harness self-test only: deliberately raises a blocking modal so
+            // Patch_SuppressBlockingWindows can be demonstrated rather than argued for.
+            RaiseTestDialogStep.StepType,
         };
 
         Assert.That(StepRegistry.KnownTypes, Is.EquivalentTo(expected));

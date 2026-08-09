@@ -42,6 +42,16 @@ public sealed class ScenarioReport
     public List<string> ScreenshotPaths { get; set; } = new();
     public List<string> Errors { get; set; } = new();
 
+    // Modal dialogs the harness cleared out of the way while this scenario ran, in the order it
+    // cleared them (see Mod/DialogGuard.cs). Normally empty.
+    //
+    // Recorded rather than done silently, on the same principle as ProfileSkipReason: a harness that
+    // quietly clicks OK on whatever the game asks is one that can hide a real problem — a mod raising
+    // an error dialog every tick would otherwise present as a perfectly clean run. Non-empty does NOT
+    // fail the scenario (a colony-naming prompt is routine and nobody's fault), but it is printed by
+    // run_test.sh so "this run needed six dialogs cleared" is something you see rather than infer.
+    public List<string> DismissedDialogs { get; set; } = new();
+
     // Rubrics emitted for an LLM judge, with their verdicts once someone has answered them. Only a
     // confident FAIL affects Pass (see VisionGate); an unjudged one leaves the run provisionally
     // green, which is why the runner prints the pending count rather than rounding it off.
