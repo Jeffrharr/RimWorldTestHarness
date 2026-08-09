@@ -169,6 +169,13 @@ public static class ScenarioDriver
         // mid-suite reload puts the state back to WaitingForMap, which returns above.
         RunProfiler.SampleFrame(Find.TickManager.Paused);
 
+        // Before every wait state below, and deliberately so. A modal with forcePause stops
+        // TicksGame, so the FastForward wait further down can never be satisfied while one is up —
+        // a guard placed after these returns would never run on the frames that need it. This is
+        // what turns "the run died on the runner's 900s timeout with the last log line being an
+        // unrelated step" into a cleared dialog and a recorded note. See Mod/DialogGuard.cs.
+        DialogGuard.ClearBlockingDialogs();
+
         if (_flushFramesRemaining > 0)
         {
             _flushFramesRemaining--;
@@ -305,7 +312,12 @@ public static class ScenarioDriver
         // settle frames (and, on the first load, the profiler's warmup), and charging those to the
         // scenario would put a load's worth of nothing into the divisor under every mean it reports.
         if (_stepIndex == 0)
+        {
             RunProfiler.BeginScenario();
+            // Same boundary, same reason: a dialog cleared during the previous scenario belongs to
+            // that scenario's report, not to this one.
+            DialogGuard.Reset();
+        }
 
         ScenarioStep step = CurrentSpec.Steps[_stepIndex];
         _stepIndex++;
@@ -430,6 +442,10 @@ public static class ScenarioDriver
     {
         ScenarioReport report = CurrentReport;
         HarvestRunProfile(report);
+        // Deliberately NOT folded into Errors: a colony-naming prompt is routine and nobody's fault,
+        // so it must not turn a good run red. It rides on the report (and out through run_test.sh) so
+        // that a run which needed dialogs cleared says so.
+        report.DismissedDialogs.AddRange(DialogGuard.DismissedTypeNames);
         // Errors count toward Pass, not just probe checks: a scenario whose steps failed verified less
         // than it claims to, and with no Probe step at all an errors-ignoring gate reports Pass over
         // an empty check list. See ReportComparer's two-arg overload.

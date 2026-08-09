@@ -1,0 +1,13 @@
+{
+  "name": "dialog_guard",
+  "saveFile": "minimal_colony.rws",
+  "description": "Self-test for Patch_SuppressBlockingWindows. Raises the real two-field naming prompt that stranded indoor_glow_lamp.json, then runs a FastForward -- the step that CANNOT complete while a forcePause dialog is up, since it waits on a TicksGame target the paused clock never reaches. Reaching the end is the assertion; a broken guard hangs here, which is the right failure mode for a test of a hang. Also raises the message-box family, which the guard refuses rather than resolves.",
+  "steps": [
+    { "type": "SetTime", "args": { "hour": "12" } },
+    { "type": "RaiseTestDialog", "args": { "kind": "name" } },
+    { "type": "FastForward", "args": { "ticks": "120" } },
+    { "type": "RaiseTestDialog", "args": { "kind": "messagebox" } },
+    { "type": "FastForward", "args": { "ticks": "120" } },
+    { "type": "Screenshot", "args": { "fileName": "dialog_guard_after.png" } }
+  ]
+}

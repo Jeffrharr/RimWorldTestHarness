@@ -1554,6 +1554,13 @@ def print_scenario(scenario, indent="  "):
         for path in shots:
             print(f"[run_test]{indent}  screenshot: {path}")
     print_vision(scenario, indent)
+    # Dialogs the harness cleared to keep the run moving. Printed rather than swallowed: a run that
+    # needed several cleared is one where the game kept asking something, and a harness that clicks OK
+    # silently is a harness that can hide a mod raising an error dialog every tick. Not a failure --
+    # a colony-naming prompt is routine -- so it prints as a note, not an ERROR.
+    dialogs = scenario.get("DismissedDialogs", [])
+    for dialog in dialogs:
+        print(f"[run_test]{indent}  dismissed dialog: {dialog}")
     for err in scenario.get("Errors", []):
         print(f"[run_test]{indent}  ERROR: {err}")
 
