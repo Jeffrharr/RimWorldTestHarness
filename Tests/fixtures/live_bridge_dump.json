@@ -1,0 +1,428 @@
+{
+  "handshake": true,
+  "host": "127.0.0.1",
+  "missingTools": [],
+  "port": 0,
+  "reachable": true,
+  "responsive": true,
+  "results": {
+    "rimbridge/get_bridge_status": {
+      "companions": {
+        "diagnostics": [],
+        "registeredToolCount": 0,
+        "totalCount": 0
+      },
+      "eventJournalCapacity": 5000,
+      "latestLogSequence": 14,
+      "latestOperationEventSequence": 1,
+      "logJournalCapacity": 2000,
+      "operationJournalCapacity": 1000,
+      "patches": {
+        "applied": true,
+        "essentialApplied": true,
+        "lateInputPatches": {
+          "applied": true,
+          "attemptCount": 6,
+          "failureCount": 0,
+          "failures": [],
+          "successCount": 6
+        },
+        "optionalPatchAttemptCount": 56,
+        "optionalPatchFailureCount": 0,
+        "optionalPatchFailures": [],
+        "optionalPatchSuccessCount": 56
+      },
+      "recentEventCount": 1,
+      "recentLogCount": 14,
+      "recentOperationCount": 1,
+      "retainedResultCapacity": 50,
+      "retainedResultCount": 0,
+      "sdk": {
+        "companionCount": 0,
+        "companionErrorCount": 0,
+        "companionWarningCount": 0,
+        "sdkAssembly": "RimBridgeServer.Sdk",
+        "sdkInformationalVersion": "2.1.0+851cc6a20cf774cf15a762437f1b0bd83732bf60",
+        "sdkVersion": "2.1.0.0"
+      },
+      "state": {
+        "automationReady": true,
+        "currentMapId": "Map_0",
+        "currentMapIndex": 0,
+        "currentMapReady": true,
+        "fadeOverlayAlpha": 0.0,
+        "gameDataReady": true,
+        "hasCurrentGame": true,
+        "inEntryScene": false,
+        "longEventPending": false,
+        "mapCount": 1,
+        "mapDataReady": true,
+        "paused": true,
+        "playable": true,
+        "programState": "Playing",
+        "screenFadeClear": true,
+        "screenFading": false,
+        "timeSpeed": "Paused",
+        "visualReady": true
+      },
+      "success": true,
+      "trackedOperationCount": 1,
+      "version": {
+        "bridgeAssemblyVersion": "2.1.0.0",
+        "bridgeVersion": "2.1.0+851cc6a20cf774cf15a762437f1b0bd83732bf60",
+        "sdkInformationalVersion": "2.1.0+851cc6a20cf774cf15a762437f1b0bd83732bf60",
+        "sdkVersion": "2.1.0.0"
+      }
+    },
+    "rimbridge/list_logs": {
+      "logs": [
+        {
+          "CapabilityId": "",
+          "EntryId": "log_4c6dd40fcdf245abad1b9c260ac8d8b6",
+          "FirstSeenAtUtc": "2026-08-09T22:48:19.409537+00:00",
+          "Level": "info",
+          "Message": "[RimBridge] GABP server connected to GABS on port 56711",
+          "OperationId": "",
+          "ParentOperationId": "",
+          "RepeatCount": 1,
+          "RootOperationId": "",
+          "ScriptCall": "",
+          "ScriptStatementId": "",
+          "ScriptStepId": "",
+          "Sequence": 14,
+          "Source": "unity",
+          "StackTrace": "",
+          "TimestampUtc": "2026-08-09T22:48:19.409537+00:00"
+        },
+        {
+          "CapabilityId": "",
+          "EntryId": "log_754e71267e724025b3e56c66438e8902",
+          "FirstSeenAtUtc": "2026-08-09T22:48:19.409166+00:00",
+          "Level": "warning",
+          "Message": "[RimBridge] STARTUP_TIMING phase=gabp.server.start-async durationMs=72 elapsedMs=39475",
+          "OperationId": "",
+          "ParentOperationId": "",
+          "RepeatCount": 1,
+          "RootOperationId": "",
+          "ScriptCall": "",
+          "ScriptStatementId": "",
+          "ScriptStepId": "",
+          "Sequence": 13,
+          "Source": "unity",
+          "StackTrace": "",
+          "TimestampUtc": "2026-08-09T22:48:19.409166+00:00"
+        }
+      ]
+    },
+    "rimbridge/list_operation_events": {
+      "events": []
+    },
+    "rimworld/get_camera_state": {
+      "cameraZoomExtensionEnabled": false,
+      "map": "0",
+      "mapId": "Map_0",
+      "mapIndex": 0,
+      "mapPosition": {
+        "x": 110,
+        "z": 134
+      },
+      "rootSize": 36.89801,
+      "sizeRange": {
+        "max": 60.0,
+        "min": 7.2
+      },
+      "success": true,
+      "viewRect": {
+        "height": 77,
+        "maxX": 176,
+        "maxZ": 172,
+        "minX": 43,
+        "minZ": 96,
+        "width": 134
+      },
+      "zoomRange": "Middle",
+      "zoomRootSize": 36.89801
+    },
+    "rimworld/get_game_info": {
+      "mapCount": 1,
+      "selectedPawns": [],
+      "status": "game_loaded",
+      "ticksGame": 288750
+    },
+    "rimworld/get_ui_state": {
+      "anySearchWidgetFocused": false,
+      "anyWindowAbsorbingAllInput": false,
+      "currentWindowGetsInput": true,
+      "floatMenuOpen": false,
+      "focusedWindowTitle": null,
+      "focusedWindowType": null,
+      "hasCurrentGame": true,
+      "inEntryScene": false,
+      "mainTab": null,
+      "mainTabOpen": false,
+      "mouseObscuredNow": false,
+      "nonImmediateDialogWindowOpen": false,
+      "openMainTabId": null,
+      "openMainTabLabel": null,
+      "openMainTabType": null,
+      "programState": "Playing",
+      "success": true,
+      "topWindowTitle": null,
+      "topWindowType": null,
+      "windowCount": 0,
+      "windows": [],
+      "windowsForcePause": false,
+      "windowsPreventCameraMotion": false,
+      "windowsPreventSave": false
+    },
+    "rimworld/list_alerts": {
+      "alertSnapshotFingerprint": "alerts-c4ae3e78db0bbc9f",
+      "alerts": [
+        {
+          "activatable": true,
+          "active": true,
+          "anyCulpritValid": true,
+          "enabledWithActiveExpansions": true,
+          "error": null,
+          "exceptionType": null,
+          "explanation": "These colonists are incapacitated on the ground:\n  - <color=#D09B61FF>Stin</color>\n\nSend another colonist to rescue them and carry them back to bed.\n\n(To rescue, select another colonist, then right click on the victim and select Rescue.)",
+          "id": "alert:alerts-c4ae3e78db0bbc9f:1:51300dccd6a293ba",
+          "jumpToTargetsText": "Click to jump to problem",
+          "label": "Colonist needs rescue",
+          "ordinal": 1,
+          "priority": "Critical",
+          "targetCount": 1,
+          "targets": [
+            {
+              "defName": "Human",
+              "id": "Thing_Human967",
+              "kind": "pawn",
+              "label": "Stin",
+              "mapId": "Map_0",
+              "mapIndex": 0,
+              "position": {
+                "x": 110,
+                "z": 128
+              },
+              "thingType": "Verse.Pawn"
+            }
+          ],
+          "targetsTruncated": false,
+          "type": "RimWorld.Alert_ColonistNeedsRescuing"
+        },
+        {
+          "activatable": true,
+          "active": true,
+          "anyCulpritValid": true,
+          "enabledWithActiveExpansions": true,
+          "error": null,
+          "exceptionType": null,
+          "explanation": "People are at risk of death because of severe illness:\n  - <color=#D09B61FF>Stin</color>\n\nMake sure that they get the best medical care possible.",
+          "id": "alert:alerts-c4ae3e78db0bbc9f:2:7f299f6e548bf32e",
+          "jumpToTargetsText": "Click to jump to problem",
+          "label": "Medical emergency",
+          "ordinal": 2,
+          "priority": "Critical",
+          "targetCount": 1,
+          "targets": [
+            {
+              "defName": "Human",
+              "id": "Thing_Human967",
+              "kind": "pawn",
+              "label": "Stin",
+              "mapId": "Map_0",
+              "mapIndex": 0,
+              "position": {
+                "x": 110,
+                "z": 128
+              },
+              "thingType": "Verse.Pawn"
+            }
+          ],
+          "targetsTruncated": false,
+          "type": "RimWorld.Alert_LifeThreateningHediff"
+        }
+      ],
+      "currentGameTick": 290000,
+      "returnedCount": 13,
+      "success": true,
+      "totalCount": 13,
+      "truncated": false
+    },
+    "rimworld/list_letters": {
+      "currentGameTick": 288750,
+      "letters": [
+        {
+          "ageTicks": 90402,
+          "arrivalTick": 198348,
+          "canDismissWithRightClick": true,
+          "choiceCount": 1,
+          "choices": [
+            {
+              "closesDialog": true,
+              "disabled": false,
+              "disabledReason": null,
+              "hasAction": true,
+              "hasLink": false,
+              "index": 1,
+              "text": "Close"
+            }
+          ],
+          "debugInfo": null,
+          "id": "Letter_4",
+          "label": "Death: Ali",
+          "letterDef": "Death",
+          "lookTargets": {
+            "any": true,
+            "isValid": false,
+            "primaryTarget": null,
+            "targetCount": 0,
+            "targets": [],
+            "targetsTruncated": false
+          },
+          "relatedFaction": null,
+          "shouldAutomaticallyOpenLetter": false,
+          "text": "(*Name)Ali(/Name) has died. Cause: Malnutrition.\n\n(*Name)Ali(/Name) should be buried and given a funeral so his friends and family can say farewell.",
+          "type": "Verse.DeathLetter"
+        },
+        {
+          "ageTicks": 90402,
+          "arrivalTick": 198348,
+          "canDismissWithRightClick": true,
+          "choiceCount": 1,
+          "choices": [
+            {
+              "closesDialog": true,
+              "disabled": false,
+              "disabledReason": null,
+              "hasAction": true,
+              "hasLink": false,
+              "index": 1,
+              "text": "Close"
+            }
+          ],
+          "debugInfo": null,
+          "id": "Letter_3",
+          "label": "Requiem of Asirath opportunity for Ali",
+          "letterDef": "NeutralEvent",
+          "lookTargets": {
+            "any": true,
+            "isValid": false,
+            "primaryTarget": null,
+            "targetCount": 0,
+            "targets": [],
+            "targetsTruncated": false
+          },
+          "relatedFaction": null,
+          "shouldAutomaticallyOpenLetter": false,
+          "text": "You can hold a spiritual funeral for <color=#D09B61FF>Ali</color>.\n\nTo begin the ritual, select a grave containing Ali's corpse and click the 'Begin Requiem of Asirath' command.\n\nExpires in <color=#87F6F6FF><color=#87F6F6FF>9 days</color></color>, on 8th of Jugust.",
+          "type": "Verse.StandardLetter"
+        }
+      ],
+      "returnedCount": 4,
+      "success": true,
+      "totalCount": 4,
+      "truncated": false
+    },
+    "rimworld/list_messages": {
+      "currentGameTick": 290000,
+      "messages": [
+        {
+          "ageTicks": 77837,
+          "alpha": 1.0,
+          "expired": false,
+          "hasQuest": false,
+          "id": "Message_11",
+          "lookTargets": {
+            "any": true,
+            "isValid": true,
+            "primaryTarget": {
+              "defName": "Human",
+              "id": "Thing_Human967",
+              "kind": "pawn",
+              "label": "Stin",
+              "mapId": "Map_0",
+              "mapIndex": 0,
+              "position": {
+                "x": 110,
+                "z": 128
+              },
+              "thingType": "Verse.Pawn"
+            },
+            "targetCount": 1,
+            "targets": [
+              {
+                "defName": "Human",
+                "id": "Thing_Human967",
+                "kind": "pawn",
+                "label": "Stin",
+                "mapId": "Map_0",
+                "mapIndex": 0,
+                "position": {
+                  "x": 110,
+                  "z": 128
+                },
+                "thingType": "Verse.Pawn"
+              }
+            ],
+            "targetsTruncated": false
+          },
+          "messageType": "ThreatBig",
+          "startingFrame": 973,
+          "startingTick": 212163,
+          "text": "Critical alert: Medical emergency"
+        },
+        {
+          "ageTicks": 77837,
+          "alpha": 1.0,
+          "expired": false,
+          "hasQuest": false,
+          "id": "Message_10",
+          "lookTargets": {
+            "any": true,
+            "isValid": true,
+            "primaryTarget": {
+              "defName": "Human",
+              "id": "Thing_Human967",
+              "kind": "pawn",
+              "label": "Stin",
+              "mapId": "Map_0",
+              "mapIndex": 0,
+              "position": {
+                "x": 110,
+                "z": 128
+              },
+              "thingType": "Verse.Pawn"
+            },
+            "targetCount": 1,
+            "targets": [
+              {
+                "defName": "Human",
+                "id": "Thing_Human967",
+                "kind": "pawn",
+                "label": "Stin",
+                "mapId": "Map_0",
+                "mapIndex": 0,
+                "position": {
+                  "x": 110,
+                  "z": 128
+                },
+                "thingType": "Verse.Pawn"
+              }
+            ],
+            "targetsTruncated": false
+          },
+          "messageType": "ThreatBig",
+          "startingFrame": 972,
+          "startingTick": 212163,
+          "text": "Critical alert: Colonist needs rescue"
+        }
+      ],
+      "returnedCount": 2,
+      "success": true,
+      "totalCount": 2,
+      "truncated": false
+    }
+  },
+  "toolCount": 125
+}

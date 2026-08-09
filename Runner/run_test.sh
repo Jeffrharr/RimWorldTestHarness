@@ -86,6 +86,17 @@
 #                          that overhead. Pin timing baselines under this flag, and record which mode
 #                          you pinned under (Probe step's `pinnedUnder` arg, which fails the run on a
 #                          mismatch rather than leaving it to a reader).
+#   --bridge               activate RimBridgeServer (Workshop 3727949765) for this run and pin the
+#                          port/token it listens on, so the live game can be asked what it is doing.
+#                          OFF by default. What it buys you: the periodic "still waiting" line gains
+#                          a liveness readout, and a timeout writes a full state dump (open windows,
+#                          letters, alerts, bridge log, camera) next to the report instead of leaving
+#                          Player.log as the only evidence. An undismissed modal dialog — a batch
+#                          run's classic silent hang — is named outright rather than bisected for.
+#                          The endpoint is written to <report>-bridge.json; drive it by hand with
+#                          Runner/gabp.py, which is also what a GABS entry would attach to.
+#   --bridge-port <n>      implies --bridge, on a fixed port instead of a free one the kernel picks.
+#                          For when something configured ahead of time has to reach the bridge.
 #   --print-config         print the resolved paths for this run and exit without touching anything
 #
 # A suite list file is one scenario path per line; '#' starts a whole-line comment, and relative
@@ -238,6 +249,23 @@ PROFILER=1
 # still be able to run the suite.
 PROFILER_EXPLICIT=0
 
+# Put RimBridgeServer (Workshop 3727949765) in this run's ModsConfig and pin the port/token it
+# listens on, so this script — and anything the caller runs alongside it — can ask the live game what
+# it is doing. See Runner/gabp.py for the protocol and for why we speak it directly rather than
+# through GABS.
+#
+# OFF BY DEFAULT, unlike --profiler, and the asymmetry is deliberate. The analyzer only reads; this
+# mod exists to *drive* the game and adds a listening socket plus a third-party assembly to the load.
+# A default that changed what every run loads would make every existing pinned measurement a
+# measurement of a different mod list, and the whole point of the pins is that they only move when
+# somebody meant to move them.
+BRIDGE=0
+
+# Empty means "pick a free one at launch". A fixed port is for the case where something outside this
+# script has to be configured ahead of time to reach the bridge — a GABS entry, say — and cannot be
+# told the port after the fact.
+BRIDGE_PORT=""
+
 # Build outputs to install over an existing installation for the life of the run, as "src:dest"
 # directory pairs. --mod-overlay resolves to entries here once packageIds are known (see
 # resolve_mod_overlays); --install is the same thing with both paths spelled out.
@@ -294,6 +322,9 @@ while (( $# )); do
         --install=*) INSTALL_PAIRS+=("${1#--install=}") ;;
         --profiler) PROFILER=1; PROFILER_EXPLICIT=1 ;;
         --no-profiler) PROFILER=0 ;;
+        --bridge) BRIDGE=1 ;;
+        --bridge-port) shift; BRIDGE=1; BRIDGE_PORT="${1:-}" ;;
+        --bridge-port=*) BRIDGE=1; BRIDGE_PORT="${1#--bridge-port=}" ;;
         --recover-only) RECOVER_ONLY=1 ;;
         -*) echo "[run_test] unknown flag: $1" >&2; usage ;;
         *) SCENARIOS+=("$1") ;;
@@ -484,6 +515,67 @@ else
     log "profiler: --no-profiler — this run is not instrumented and produces no cost tables."
 fi
 
+# ---------------------------------------------------------------------------
+# --bridge resolution
+# ---------------------------------------------------------------------------
+# Same shape as the profiler above, and for the same reason: a Workshop mod the caller has no folder
+# path for, resolved by reading the packageId off whatever copy is installed rather than hardcoding a
+# spelling that RimWorld may rename underneath us.
+BRIDGE_MOD_ID=""
+BRIDGE_TOKEN=""
+# Where the endpoint gets written for other processes to pick up. Filled in once the report path is
+# known, because it belongs with the run it describes rather than at a fixed path that a second run
+# would overwrite while the first was still using it.
+BRIDGE_ENDPOINT_FILE=""
+
+resolve_bridge_mod() {
+    local candidate resolved id
+    local matches=()
+    for candidate in "$MODS_DIR"/*/ "$WORKSHOP_DIR"/*/; do
+        candidate="${candidate%/}"
+        if [[ -f "$candidate/About/About.xml" ]]; then
+            id="$(read_package_id "$candidate" 2>/dev/null)" || id=""
+            if [[ "$id" == brrainz.rimbridgeserver* ]]; then
+                resolved="$(readlink -f "$candidate")"
+                matches+=("$id|$resolved")
+            fi
+        fi
+    done
+    if (( ${#matches[@]} == 0 )); then
+        # A hard failure, where a missing profiler is only a warning. The difference is that
+        # --profiler is on by default and so must degrade on a machine that lacks the mod, whereas
+        # --bridge was typed: the caller asked for a live channel by name and silently not getting
+        # one would mean discovering it at the moment the run wedged, which is the one moment the
+        # feature exists for.
+        fail "--bridge: RimBridgeServer is not installed. Subscribe to Workshop item 3727949765 (or drop a copy in $MODS_DIR), or drop the flag."
+    fi
+    BRIDGE_MOD_ID="${matches[0]%%|*}"
+    log "bridge: RimBridgeServer '$BRIDGE_MOD_ID' (${matches[0]#*|})"
+}
+
+# A free port from the kernel rather than a fixed one, so two machines (or a run and a game somebody
+# left open on the mod's own 5174 default) cannot collide. Asking Python for a port it then closes is
+# the usual small race — something else could take it in the gap — but the alternative, letting the
+# mod pick and reading the port back out of Player.log, is a race against a game that may already be
+# unresponsive, which is worse in exactly our case.
+pick_bridge_port() {
+    python3 -c 'import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()'
+}
+
+if (( BRIDGE )); then
+    resolve_bridge_mod
+    [[ -n "$BRIDGE_PORT" ]] || BRIDGE_PORT="$(pick_bridge_port)"
+    # Not a password protecting anything valuable — the socket is loopback-only — but the handshake
+    # requires one, and a per-run random token means a stale client holding an old token cannot
+    # attach to a later run and report its state as this one's.
+    BRIDGE_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+    log "bridge: 127.0.0.1:$BRIDGE_PORT (token pinned for this run)"
+fi
+
 # Validate every install pair (both forms land here) before anything is locked or touched. The ':'
 # split is why neither path may contain one; saying so now beats a confusing "no such directory".
 INSTALL_SRCS=()
@@ -589,6 +681,13 @@ print_config() {
     for mod_dir in ${MOD_UT_DIRS[@]+"${MOD_UT_DIRS[@]}"}; do
         echo "MOD_UNDER_TEST=$mod_dir"
     done
+    echo "BRIDGE=$BRIDGE"
+    if (( BRIDGE )); then
+        echo "BRIDGE_MOD_ID=$BRIDGE_MOD_ID"
+        echo "BRIDGE_PORT=$BRIDGE_PORT"
+        # The token is deliberately NOT printed. --print-config output ends up pasted into PRs and
+        # issues, and a loopback secret is still a secret worth not training people to paste.
+    fi
 }
 if [[ $PRINT_CONFIG -eq 1 ]]; then
     print_config
@@ -1084,6 +1183,7 @@ EXCLUDED_DLC_JSON="$(printf '%s\n' ${EXCLUDED_DLC[@]+"${EXCLUDED_DLC[@]}"} | pyt
 RIMWORLD="$RIMWORLD" REQUIRED_MODS_JSON="$REQUIRED_MODS_JSON" \
     MOD_UT_IDS_JSON="$MOD_UT_IDS_JSON" MOD_UT_AFTER_HARNESS_JSON="$MOD_UT_AFTER_HARNESS_JSON" \
     EXCLUDED_DLC_JSON="$EXCLUDED_DLC_JSON" PROFILER_MOD_ID="$PROFILER_MOD_ID" \
+    BRIDGE_MOD_ID="$BRIDGE_MOD_ID" \
 python3 - "$MODSCONFIG" <<'PYEOF'
 import json, os, re, sys
 
@@ -1135,9 +1235,15 @@ after_harness = set(json.loads(os.environ.get("MOD_UT_AFTER_HARNESS_JSON", "[]")
 # to nobody — the per-mod table this whole feature produces would come back missing exactly the rows
 # the run was launched to look at. Empty string when --profiler was not passed, and filtered out below.
 profiler = [p for p in [os.environ.get("PROFILER_MOD_ID", "")] if p]
+# --bridge goes early, straight after the analyzer, so that if a mod under test dies during load the
+# bridge is already listening and can be asked about it. Loading it last would mean the one failure
+# mode where a live channel is most valuable — a load-time explosion — is also the one where it is
+# guaranteed not to be there yet. It has no ordering constraint of its own: its own extension
+# discovery deliberately runs after every mod assembly is loaded, whenever it was loaded itself.
+bridge = [b for b in [os.environ.get("BRIDGE_MOD_ID", "")] if b]
 
 active = []
-for pid in (["ludeon.rimworld"] + dlc_ids + ["brrainz.harmony"] + profiler + required +
+for pid in (["ludeon.rimworld"] + dlc_ids + ["brrainz.harmony"] + profiler + bridge + required +
             [p for p in mods_under_test if p not in after_harness] +
             ["joof.rimworldtestharness"] +
             [p for p in mods_under_test if p in after_harness]):
@@ -1401,6 +1507,19 @@ launch_rimworld() {
             harness_env+=(RWTH_PROFILE_SKIP="$PROFILER_SKIP_REASON")
         fi
 
+        # The whole --bridge contract, in two variables. RimBridgeServer reads these at startup
+        # (Lib.GAB's UseGabsEnvironmentIfAvailable) and listens where we say instead of on its own
+        # default port with a random token it only announces in Player.log. Being told rather than
+        # having to read the log is the point: when a run wedges, the log is a file whose last line
+        # we cannot trust to have been flushed, and grepping it for a token is a race we would lose
+        # exactly when we need to win it.
+        #
+        # GABS_GAME_ID is deliberately not set. It is optional (it only names the agent id), and
+        # leaving it unset keeps this run honestly labelled as not being a GABS session.
+        if (( BRIDGE )); then
+            harness_env+=(GABP_SERVER_PORT="$BRIDGE_PORT" GABP_TOKEN="$BRIDGE_TOKEN")
+        fi
+
         env "${harness_env[@]}" RWTH_REPORT="$REPORT_PATH" \
             "$RIMWORLD/RimWorldLinux" --no-sandbox \
             "${quicktest_arg[@]}" \
@@ -1449,9 +1568,85 @@ log "--- Step 5: launching RimWorld ---"
 launch_rimworld
 
 # ---------------------------------------------------------------------------
+# Step 5b: connect to the in-game bridge
+# ---------------------------------------------------------------------------
+# The bridge only starts once RimWorld has finished loading mods, which is a minute or more behind
+# the process appearing, so this waits rather than assuming. Confirming the handshake here — before
+# any scenario has run — is what makes a later "the bridge did not answer" mean "the game stopped
+# responding" instead of "the bridge was never up".
+#
+# Non-fatal on purpose. --bridge buys diagnostics, and a run that refused to test anything because
+# its diagnostics were unavailable would have the priority backwards.
+GABP_CLI="$SCRIPT_DIR/gabp.py"
+bridge_connect() {
+    BRIDGE_ENDPOINT_FILE="${REPORT_PATH%.json}-bridge.json"
+    # Written before the wait, not after, so a caller watching for the file can attach to a game that
+    # is still booting — and so the endpoint survives for post-mortem use even if the wait times out.
+    python3 -c 'import json, os, sys
+json.dump({"port": int(sys.argv[1]), "token": sys.argv[2], "host": "127.0.0.1",
+           "pid": int(sys.argv[3]), "report": sys.argv[4]},
+          open(sys.argv[5], "w"), indent=2)' \
+        "$BRIDGE_PORT" "$BRIDGE_TOKEN" "$RIMWORLD_PID" "$REPORT_PATH" "$BRIDGE_ENDPOINT_FILE"
+    chmod 600 "$BRIDGE_ENDPOINT_FILE"
+    log "bridge: endpoint written to $BRIDGE_ENDPOINT_FILE"
+
+    local surface
+    if surface="$(python3 "$GABP_CLI" --endpoint "$BRIDGE_ENDPOINT_FILE" wait --for 180 2>/dev/null)"; then
+        local count
+        count="$(printf '%s' "$surface" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("toolCount", 0))')"
+        log "bridge: connected — $count tools available."
+        log "bridge: drive it with  python3 $GABP_CLI --endpoint $BRIDGE_ENDPOINT_FILE tools"
+    else
+        log "bridge: WARNING — did not answer within 180s. The run continues without live diagnostics."
+    fi
+}
+if (( BRIDGE )); then
+    log "--- Step 5b: connecting to RimBridgeServer ---"
+    bridge_connect
+fi
+
+# ---------------------------------------------------------------------------
 # Step 6: wait for the report
 # ---------------------------------------------------------------------------
 log "--- Step 6: waiting for scenario report ---"
+
+# What a stalled run leaves behind. Historically this wait could only end two ways — a report, or a
+# timeout naming a log file — and neither says what the game was doing at the moment it stopped. So
+# with --bridge on, the game gets asked directly, and the answer is written next to the report.
+#
+# Deliberately called BEFORE fail(), because fail() exits and teardown kills the process the dump
+# needs to talk to. There is exactly one chance to collect this.
+bridge_stall_dump() {
+    local reason="$1" out summary
+    (( BRIDGE )) || return 0
+    [[ -n "$BRIDGE_ENDPOINT_FILE" && -f "$BRIDGE_ENDPOINT_FILE" ]] || return 0
+    out="${REPORT_PATH%.json}-bridge-stall.json"
+    log "bridge: $reason — asking the live game what it is doing..."
+    summary="$(python3 "$GABP_CLI" --endpoint "$BRIDGE_ENDPOINT_FILE" dump --out "$out" 2>&1 >/dev/null || true)"
+    log "bridge: $summary"
+    log "bridge: full state written to $out"
+}
+
+# A cheap liveness classification for the periodic waiting line. Turns a silent 900s wait into a
+# running readout of whether the game is still ticking — which is the difference between "this
+# scenario is slow" and "this scenario is never going to finish".
+bridge_liveness() {
+    (( BRIDGE )) || return 0
+    [[ -n "$BRIDGE_ENDPOINT_FILE" && -f "$BRIDGE_ENDPOINT_FILE" ]] || return 0
+    python3 "$GABP_CLI" --endpoint "$BRIDGE_ENDPOINT_FILE" --timeout 5 probe 2>/dev/null \
+        | python3 -c 'import json,sys
+try:
+    r = json.load(sys.stdin)
+except Exception:
+    print("bridge: unreadable"); raise SystemExit
+if r.get("responsive"):
+    print(f"bridge responsive ({r.get(\"toolCount\", 0)} tools)")
+elif r.get("handshake"):
+    print("BRIDGE HANDSHAKING BUT TOOLS SILENT — main thread wedged")
+else:
+    print("bridge not answering")' || true
+}
+
 elapsed=0
 timeout_secs=900
 while [[ ! -f "$REPORT_PATH" ]]; do
@@ -1461,9 +1656,10 @@ while [[ ! -f "$REPORT_PATH" ]]; do
     sleep 5
     elapsed=$((elapsed + 5))
     if (( elapsed % 60 == 0 )); then
-        log "  ...still waiting (${elapsed}s elapsed)..."
+        log "  ...still waiting (${elapsed}s elapsed)... $(bridge_liveness)"
     fi
     if [[ $elapsed -ge $timeout_secs ]]; then
+        bridge_stall_dump "timed out after ${timeout_secs}s"
         fail "Timed out after ${timeout_secs}s waiting for $REPORT_PATH. Check $PLAYER_LOG for \"RWTH:\" lines."
     fi
 done

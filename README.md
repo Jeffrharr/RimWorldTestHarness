@@ -559,6 +559,8 @@ authored scenarios can't overwrite each other's images.
 | `--without-dlc <packageId>` | Leave an installed DLC out of this run's `ModsConfig` (e.g. `ludeon.rimworld.odyssey`). Repeatable. For exercising a scenario's skip-without-the-DLC path on a machine that owns the DLC — otherwise that branch is code nobody can run. |
 | `--profiler` | Activate Dubs Performance Analyzer (Workshop 2038874626) for this run. **On by default**; passing it explicitly only changes one thing — a missing analyzer becomes a hard failure instead of a warning, because you asked for it by name. |
 | `--no-profiler` | Leave the analyzer out. The flag to pin timing baselines under: the analyzer instruments every Harmony patch in the load, so every timing number in a profiled run, probes included, comes from an instrumented build. Record the mode on the `Probe` step (`pinnedUnder`) so a cross-mode comparison fails the run instead of drifting. |
+| `--bridge` | Activate RimBridgeServer (Workshop 3727949765) and pin the port/token it listens on, so the live game can be asked what it is doing. **Off by default.** See [Asking a stalled run what it is doing](#asking-a-stalled-run-what-it-is-doing). |
+| `--bridge-port <n>` | Implies `--bridge`, on a fixed port rather than a free one the kernel picks. For when something configured ahead of time has to reach the bridge. |
 | `--print-config` | Print every path the run would use and exit — touching, locking, and creating nothing. |
 
 `--without-dlc` deactivates rather than uninstalls, which is the right lever: `ModsConfig.<Dlc>Active`
@@ -679,6 +681,106 @@ Design constraints worth knowing if you use it:
 
 ---
 
+## Asking a stalled run what it is doing
+
+A batch run has always had exactly two endings: a report, or a timeout naming `Player.log`. Neither
+tells you what the game was doing at the moment it stopped, so a stall gets diagnosed by re-running
+with pieces removed until it stops stalling. That is how one 900s timeout in a sibling repo was
+narrowed to `FastForward`/preset/`Screenshot`, and it is why a memory-pressure hang is
+indistinguishable from "your last edit broke it" until you have burned an hour on it.
+
+`--bridge` activates **RimBridgeServer** (Workshop 3727949765, `brrainz.rimbridgeserver`), a
+third-party mod that runs a [GABP](https://github.com/pardeike/GABP) server *inside* RimWorld and
+exposes a large read/write tool surface over it — UI state, game and camera state, letters, alerts,
+mod settings, screenshots, debug actions. The runner connects to it as a client, which buys three
+things:
+
+- **The waiting line becomes a readout.** Every 60s, `...still waiting (300s)...` gains
+  `bridge responsive (112 tools)` — or `BRIDGE HANDSHAKING BUT TOOLS SILENT — main thread wedged`.
+- **A timeout writes a state dump** to `<report>-bridge-stall.json`: bridge status, recent in-game
+  log, open windows, letters, alerts, camera. The summary line calls out **open windows** by name,
+  because an undismissed modal dialog is the classic silent hang — a batch run waiting on a click
+  nobody will make, with nothing wrong in the log because nothing *is* wrong from the game's side.
+- **You can drive the game by hand** while it runs, with `Runner/gabp.py`.
+
+```bash
+./Runner/run_test.sh --bridge Scenarios/spawn_pawns.json
+# [run_test] bridge: 127.0.0.1:56783 (token pinned for this run)
+# [run_test] bridge: endpoint written to .../reports/spawn_pawns-<stamp>-bridge.json
+
+python3 Runner/gabp.py --endpoint <that file> tools           # the whole surface
+python3 Runner/gabp.py --endpoint <that file> probe           # reachable / handshaking / responsive
+python3 Runner/gabp.py --endpoint <that file> dump            # everything a stall needs
+python3 Runner/gabp.py --endpoint <that file> call rimworld/get_ui_state
+```
+
+### The port/token contract
+
+RimBridgeServer reads `GABP_SERVER_PORT` and `GABP_TOKEN` from its own process environment, so the
+runner sets both on the launch line and the endpoint is **known** rather than discovered. The
+documented alternative is scraping `[RimBridge] Bridge token: …` out of `Player.log`, which is a race
+against a game that may already be wedged — unavailable at precisely the moment it is wanted.
+
+### Why not GABS
+
+[GABS](https://github.com/pardeike/GABS) is upstream's host-side companion and the natural way to
+drive a live game from an MCP client. It is the wrong tool *inside the runner*, because its job is to
+start and supervise the game process, and that is the one job this runner cannot delegate: the
+exclusive `flock`, the asset-claim ledger and the minimal `ModsConfig` it writes are what make a
+run's numbers attributable to a known build. A second supervisor launching RimWorld beside that would
+boot the machine's real mod list outside the lock.
+
+They are not alternatives, though — they consume the *same* two environment variables, so a GABS
+entry can attach to a game this runner launched. Speaking GABP directly here makes that easier rather
+than harder, because it is what made the endpoint deterministic in the first place.
+
+### Timeouts are a measurement
+
+RimBridgeServer marshals tool bodies onto RimWorld's main thread (game state may not be touched from
+anywhere else), while the socket accept and the handshake are answered off it. So the three outcomes
+mean three different things, and `probe` reports them separately:
+
+| Outcome | What it means |
+|---|---|
+| no connection | the process is gone, or the bridge never started |
+| handshake, but tools time out | the process is alive and its **main thread is wedged** |
+| tools answer | the game is running; the stall is above us, in the scenario |
+
+Note also that when the bridge raises a blocking *attention* item, ordinary `rimworld/*` calls are
+held until it is acknowledged while `rimbridge/*` diagnostics stay answerable. The dump asks the
+attention-bypass tools first for exactly that reason, so a dump in that state still returns something
+rather than a column of timeouts.
+
+### Keeping up with upstream
+
+`Runner/gabp.py` names two things that belong to upstream and can change without breaking anything
+loudly: the tools the dump asks for, and the fields the summary line reads out of their answers. A
+rename there does not make the client fail — it makes the summary quietly stop saying anything,
+which is the worst way for a diagnostic to break.
+
+So `Tests/fixtures/live_bridge_dump.json` is a real dump taken from a running game, and
+`Tests/runner/test_gabp.py` asserts every tool name and every field the summary depends on against
+it. Re-capture after a RimBridgeServer update:
+
+```bash
+./Runner/run_test.sh --bridge Scenarios/daycycle_timelapse.json        # one shell
+python3 Runner/gabp.py --endpoint <report>-bridge.json dump --out …    # another, while it runs
+```
+
+One cosmetic wrinkle worth knowing when reading the in-game log: because the runner sets the same
+environment variables GABS would, RimBridgeServer logs `GABP server connected to GABS`. There is no
+GABS involved — the mod cannot tell the difference, and does not need to.
+
+### Relationship to the live companion channel
+
+The companion channel below is ours, file-based, and armed by a setting so it works against a game
+started through Steam. The bridge is third-party, socket-based, and armed by a runner flag. They
+overlap but are aimed at different things: the companion exposes *our* verbs (steps, probes, feature
+flags) to a game somebody is playing; the bridge exposes *the game's* surface to a run that is
+misbehaving. Prefer the bridge's tools over writing a new probe for a fact it already reports.
+
+---
+
 ## One run at a time
 
 A run mutates global machine state, so it defends itself rather than trusting it's alone:
@@ -700,7 +802,7 @@ A run mutates global machine state, so it defends itself rather than trusting it
 |---|---|
 | `Shared/` | Pure spec/report/planner logic (`netstandard2.0`, no game dependency). Fully unit-tested offline. `Steps/` holds each step's game-free half. |
 | `Mod/` | The in-game driver (`net481`, Harmony): bootstrap, `ScenarioDriver` state machine, `StepExecutor`, `SceneBuilder`, `LiveCommandDriver`, patches, `Probes/`, `Features/`, and `Steps/` for each step's live-game half. |
-| `Runner/` | `run_test.sh` (launch/wait/gate) and `fetch_mods.sh` (Workshop dependency download). |
+| `Runner/` | `run_test.sh` (launch/wait/gate), `fetch_mods.sh` (Workshop dependency download), `asset_claims.py` (the rollback ledger), and `gabp.py` (the GABP client `--bridge` uses to ask a live game what it is doing). |
 | `Scenarios/` | Modset-agnostic example scenarios and a suite list. |
 | `Fixtures/` | Save files scenarios load from. Gitignored; created manually. |
 | `Tests/RimWorldTestHarness.Tests/` | NUnit tests for `Shared/`. |
