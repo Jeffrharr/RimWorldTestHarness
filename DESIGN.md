@@ -194,6 +194,88 @@ exclusions were always safety decisions rather than gaps — the companion chann
 player's colony, and `PlaceThings` spawns with `WipeMode.Vanish` — and a default of "no" means a new
 step cannot become live-callable by being added to one list and forgotten in another.
 
+## Delta asserts: gating on the difference, not on the frame
+
+The second verification tier. A probe proves a formula returns the right number; nothing proved the
+number reached the screen, which is how CelestialLighting #15 shipped green while rendering nothing.
+
+The obstacle was never the comparison, it was reproducibility. A live scene is random per boot —
+colony layout, weather, pawns, HUD — so there is no golden frame to diff against and there never will
+be. The move is to stop trying: **two frames from one boot with one feature toggled between them
+differ only by that feature, by construction.** The difference is stable even though neither frame is,
+so the assertion is about the delta and never about an absolute pixel value.
+
+That is also why the default region is the whole frame rather than a mask. In the toggle shape,
+everything outside the effect is byte-identical and contributes exact zeros — it dilutes the mean,
+which is why the median is the headline, but it cannot manufacture a difference. A region parameter
+exists for the narrower case where a scenario legitimately changes the scene between captures (new
+terrain, a spawned thing, a moved camera), at which point "everything else is identical" stops holding
+and a whole-frame number is partly about the change nobody asked about.
+
+Region is deliberately only a rectangle. Content-derived masks — "the shadowed pixels", "the sky" —
+were in the original sketch for issue #7 and were left out: each is a heuristic that can be wrong in a
+way the resulting number does not reveal, and a metric that quietly stops measuring what its name says
+is worse than no metric. A rect can be checked by looking at the frame.
+
+### The measurement lives in Python, and that is a real trade
+
+Every other interesting decision in this repo is C# in `Shared/`, pure and offline-tested. This one is
+not, because it cannot be. The mod cannot judge its own screenshots: Unity has not necessarily flushed
+the PNG, the game ships no image decoder, and doing per-pixel work inside the tick loop would slow
+down the very thing being measured. The comparison has to happen out of process, after the game has
+exited, next to the `ffmpeg` the runner already depends on for stitching timelapses.
+
+So the step is split. `Shared/Steps/BuiltIn/AssertStep.cs` validates the declaration at load time —
+before a run spends minutes producing frames nobody can assert on — and `Mod/Steps/BuiltIn/
+AssertAction.cs` resolves which two frames and records what the scenario declared between them.
+`Runner/frame_delta.py` measures and `Runner/delta_gate.py` judges, both unit-tested offline against
+synthetic pixel buffers with no game and no ffmpeg (`Tests/runner/`). The house rule survives; only
+its language changed.
+
+The one thing the split must not do is put the *gate* in two languages. It doesn't: `delta_gate.py`
+only **ANDs** its verdicts into `Pass`. It never recomputes the mod's half — probe checks, step
+errors, blocking vision verdicts stay `ReportComparer`'s business — so there is no mirrored rule to
+drift. `delta_gate.py` is simply the last writer of the report.
+
+### An unevaluated delta assert fails
+
+Missing `ffmpeg`, a frame deleted by `--delete-frames`, an unreadable PNG: each ends with a scenario
+that declared a hard gate and did not run it. The tempting behaviour is warn-and-continue, since the
+cause is environmental rather than a defect in anything under test.
+
+That is the green-run-means-less failure the rest of this repo is built to avoid, so it is a failure,
+with a reason naming the cause. This is the **opposite** policy from `VisionGate`, deliberately: an
+unjudged rubric is waiting on a human who may legitimately not have looked yet, whereas nothing will
+ever arrive to make an unevaluated delta green. `run_test.sh` catches the remaining case — an assert
+that never reached the gate at all — and exits non-zero over it, because the gate cannot report on the
+run in which it did not happen.
+
+### Validation refuses an assert that asserts nothing
+
+A delta with no direction and no bounds measures two frames and accepts every possible answer, and
+`direction: any` is the absence of a direction rather than a direction. Both are rejected at load
+time, along with a frame compared against itself (always a perfect zero, which reads as "no effect")
+and a band no measurement can satisfy.
+
+This is the same argument the `Assert` step was added under: the tier exists so that a green run means
+something, and a step that looks like a check and is not would leave the run *more* misleading than
+having no check at all.
+
+### A verdict carries its own inputs
+
+Alongside the pass/fail, every assert records the full measurement and `Inputs` — the steps the
+scenario declared between the two frames.
+
+This is not decoration. A live scenario recently probed one of the two values that determined its
+result and not the other, so two runs reporting an *identical* probe value produced an eightfold
+difference on screen with nothing in the report to explain it. The report was not wrong; it was
+incomplete in a way that looked complete, and the gap survived a whole PR cycle.
+
+A ΔE with no record of what produced it reproduces that gap exactly. Recording the intervening steps
+is the cheapest honest fix — an unexplained result has somewhere to point. It is scoped to *between*
+the two frames because what the two captures share cannot explain how they differ, and a full step
+dump would bury the two or three lines that can.
+
 ## Vision asserts: a rubric an LLM can judge
 
 The third verification tier, alongside the numeric probe gate and bare screenshots. A scenario

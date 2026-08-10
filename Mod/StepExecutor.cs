@@ -20,6 +20,9 @@ public sealed class StepOutcome
     public float? ProbeValue;       // Probe: the raw reading (caller decides how to interpret it)
     public string? ScreenshotPath;  // Screenshot: absolute path the PNG is being written to
     public VisionAssert? VisionAssert;  // Assert(kind=vision): the rubric+evidence packet to record
+    // Assert(kind=delta): the frames to compare and the expectation, for Runner/delta_gate.py to
+    // judge once the game has exited. Half-filled on purpose — see Shared/DeltaAssert.cs.
+    public DeltaAssert? DeltaAssert;
     public ProfileTable? ProfileTable;  // ProfileStop: the harvested per-patch cost table
     // ProfileAssert: a check the step already decided. Distinct from ProbeValue, which is a raw
     // reading the DRIVER compares against the step's own expected/tolerance args — a profile bound is

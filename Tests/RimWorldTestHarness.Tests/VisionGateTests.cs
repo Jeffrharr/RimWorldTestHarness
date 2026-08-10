@@ -157,15 +157,17 @@ public class AssertStepTests
         });
     }
 
-    // A 'delta' assert must be rejected loudly rather than accepted and ignored: a scenario that
-    // looks like it asserts something and doesn't is the exact failure this tier exists to catch.
+    // The vision half must not start accepting the delta half's args. Both kinds share a step type,
+    // so a scenario that names delta's frames while asking for a vision judgement has almost
+    // certainly got its `kind` wrong, and the missing rubric is what says so.
     [Test]
-    public void RejectsTheUnimplementedDeltaKindByName()
+    public void AVisionAssertStillNeedsARubricEvenWithDeltaArgsPresent()
     {
-        List<string> errors = Validate((AssertStep.KindArg, AssertStep.DeltaKind), Images, Prompt);
+        List<string> errors = Validate(
+            Kind, Images, (AssertStep.BaselineArg, "off.png"), (AssertStep.TargetArg, "on.png"));
 
         Assert.That(errors, Has.Count.EqualTo(1));
-        Assert.That(errors[0], Does.Contain("not implemented"));
+        Assert.That(errors[0], Does.Contain(AssertStep.PromptArg));
     }
 
     [Test]

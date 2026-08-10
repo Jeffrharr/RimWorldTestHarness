@@ -232,6 +232,150 @@ empty `Saves/`, and only the `Config/` we seed — and no live run has confirmed
 that way. Turn it on deliberately, expect to debug it, and note that scenario screenshots are
 unaffected (they are written next to the report in `reports/`).
 
+## Delta asserts: gating on the pixels, automatically
+
+A `Probe` checks that a formula returns the right number. It cannot check that the number reached the
+screen — CelestialLighting #15 shipped with unit tests *and* a probe both green while the effect
+rendered nothing.
+
+Absolute pixels are hopeless here: the colony, weather, pawns and HUD are random per boot, so no
+screenshot is reproducible run to run. But **two frames from one boot with one feature toggled
+between them differ only by that feature, by construction.** The delta is stable even though neither
+frame is. An `Assert` step with `kind: delta` asserts on that delta, with no LLM and no human.
+
+```json
+{ "type": "Screenshot", "args": { "fileName": "aurora_off.png" } },
+{ "type": "SetFeature", "args": { "featureName": "auroraTint", "enabled": "true" } },
+{ "type": "Screenshot", "args": { "fileName": "aurora_on.png" } },
+{ "type": "Assert", "args": {
+    "kind": "delta",
+    "baseline": "aurora_off.png",
+    "target": "aurora_on.png",
+    "direction": "greener",
+    "minDeltaE": "2",
+    "expect": "the aurora tint is visible at a glance and shifts the sky off the Planckian locus"
+} }
+```
+
+`baseline` and `target` name `fileName`s captured by earlier `Screenshot` steps in the same scenario
+(a timelapse's numbered frames work too — `daycycle_0000.png`). Order matters: every direction below
+is a movement **from** baseline **to** target.
+
+### What you can assert
+
+| Arg | Meaning |
+|---|---|
+| `direction` | `any` (default), `brighter`, `darker`, `warmer`, `cooler`, `purpler`, `greener` |
+| `minDeltaE` | floor on the **median** per-pixel CIELAB ΔE — "this must be visible at all" |
+| `maxDeltaE` | ceiling on the same — catches an effect that should have been subtle and blew out the frame |
+| `region` | `full` (default) or `X,Y,W,H` in pixels |
+| `stride` | sample every Nth pixel, default `2` |
+
+**At least one of `direction`, `minDeltaE` or `maxDeltaE` is required**, and `direction: any` does not
+count. An assert with no direction and no bounds measures two frames and accepts every possible
+answer — a step that looks like a check and is not.
+
+The ΔE thresholds are the standard perceptual ones: under 1 imperceptible, 1–2 on close inspection,
+2+ at a glance, 5+ obvious. The **median** is the headline rather than the mean because a frame is
+mostly background, and a mean is dragged toward zero by everything the effect did not touch; `p90` and
+`p99` are recorded alongside so a genuinely localized effect (low median, high tail) is
+distinguishable from no effect at all.
+
+Each direction reads one number, chosen so the assertion means what its English name means:
+`brighter`/`darker` read the signed mean ΔL\*, `warmer`/`cooler` read the correlated colour
+temperature (**warmer is *lower* in kelvin**), and `purpler`/`greener` read the signed Duv — the
+distance from the Planckian locus, which is the claim a magnitude cannot make. A large ΔE that stayed
+on the locus means the frame merely got warmer; for a subsystem whose claim is a *hue*, that is a
+failure wearing a good number.
+
+### Whole-frame is the default, and usually right
+
+For the shape above — one boot, toggle one feature — everything except the effect is identical by
+construction, so the untouched majority of the frame contributes exact zeros. It dilutes the mean
+(hence the median) but it cannot invent a difference.
+
+Reach for `region` when the scenario **legitimately changes the scene between the two captures**:
+different terrain painted, a thing spawned, the camera moved. Then "everything else is identical"
+stops being true and a whole-frame number is partly a statement about the change you did not care
+about. A rect puts the measurement back on the effect.
+
+Only a rect, deliberately. Content-derived masks ("the shadowed pixels", "the sky") are a heuristic
+that can be wrong in a way the resulting number does not reveal, which is how a metric quietly stops
+measuring what its name says. A rect is checkable by looking at the frame.
+
+### What blocks a run, and what the report keeps
+
+A delta assert is a **hard gate**: a failing one fails the scenario, exactly like a `Probe`. So does
+one that could not be evaluated at all — a missing `ffmpeg`, a frame deleted by `--delete-frames`, an
+unreadable PNG. That is the opposite policy from a vision assert, and deliberately: an unjudged rubric
+is waiting on a human who may not have looked yet, whereas nothing will ever arrive to make an
+unevaluated delta green.
+
+The measurement is not thrown away. Each assert's `Result` carries every statistic the comparison
+produced — median/mean/p90/p99 ΔE, changed fraction, mean ΔL\*, mean colours, Duv and CCT before and
+after — plus `Inputs`, **the steps the scenario declared between the two frames**:
+
+```json
+"Inputs": ["SetFeature(enabled=true, featureName=auroraTint)"],
+"Result": {
+  "Pass": true,
+  "Reason": "median ΔE 6.79 (obvious), 37.4% of sampled pixels changed, mean ΔL* +1.20, Duv +0.00104 -> -0.00298",
+  "Stats": { "MedianDeltaE": 6.79, "P99DeltaE": 21.4, "...": "..." }
+}
+```
+
+`Inputs` is there because of a real failure: a scenario once probed one of the two values that
+determined its result and not the other, so two runs reporting an *identical* probe value rendered
+eightfold differently, with nothing in the report to explain it. The report was not wrong; it was
+incomplete in a way that looked complete. A ΔE with no record of what produced it has exactly that
+gap, and `run_test.sh` prints these lines under any assert that failed.
+
+### Running the comparison by hand
+
+`Runner/delta_gate.py` is Step 6b of a run, but both halves are usable on their own — during an
+investigation, or over frames from a run that has already finished:
+
+```bash
+# Just measure two frames.
+python3 Runner/frame_delta.py reports/aurora_off.png reports/aurora_on.png
+python3 Runner/frame_delta.py a.png b.png --region 200,100,400,200 --stride 4 --json
+
+# Re-judge a report (idempotent: an assert that already has a Result is left alone).
+python3 Runner/delta_gate.py reports/some_scenario-20260806-121500.json --verbose
+```
+
+`frame_delta.py` needs `ffmpeg` and `ffprobe` on PATH — it shells out for raw pixels rather than
+taking a numpy or Pillow dependency, which is also why the colour maths is hand-rolled and unit-tested
+(`Tests/runner/test_frame_delta.py`).
+
+## `compose_ab.py` — a side-by-side A/B video
+
+A still can *assert* that an effect is a narrow transient; it cannot show it, and a reviewer is right
+to suspect a still was picked from a sweep. Run a `Timelapse` twice in one boot with a feature toggled
+between, then pair the two sequences frame-for-frame:
+
+```bash
+python3 Runner/compose_ab.py reports/ aurora_off aurora_on reports/aurora_ab \
+    --caption "hour {value:.3f}" --caption-from 20.0 --caption-step 0.05 \
+    --left-label "aurora OFF" --right-label "aurora ON" --skip-first
+```
+
+Writes `aurora_ab.mp4` (full size, for the archive) and `aurora_ab.gif` (downscaled — GitHub animates
+a GIF inline from a raw URL but will not give a player to a video).
+
+Each frame is banded with **`frames differ` / `frames byte-identical`**, measured from the rendered
+PNGs rather than asserted. A run that captures 79 frames and finds 50 identical and 29 differing in
+one contiguous block has *demonstrated* the window rather than described it.
+
+Captions are supplied, never derived — this tool knows nothing about what it is filming. Either a
+linear ramp (`--caption-from` / `--caption-step`, which is exactly what a `Timelapse`'s
+`fromHour`/`stepHours` or a `TickLapse`'s `ticks` already are, with `{index}` and `{value}` available
+in `--caption`), or `--captions-file`, one line per frame, for anything the caller derives itself.
+
+`--skip-first` drops frame 0 of each sweep: the first screenshot of a run can still carry UI chrome
+that hidden-UI mode has not finished tearing down, which would put a false "frames differ" mark on a
+frame outside the window.
+
 ## Vision asserts: giving an LLM a rubric
 
 A `Probe` checks that a formula returns the right number. It cannot check that the number reached the
@@ -299,8 +443,9 @@ doesn't have to re-derive it.
 
 A `ScenarioSpec` can mix `Probe` steps (numeric pass/fail — the spec-driven gate,
 `Shared/ReportComparer.cs`) and `Screenshot` steps (visual-confirm — a human or Claude reviews the
-image afterward) in the same run. Neither mode affects the other: `ScenarioReport.Pass` is decided
-purely by probe checks, and screenshot paths are just listed alongside for review.
+image afterward) in the same run. A bare screenshot never affects the gate; it is listed alongside for
+review. What turns an image into a gate is an `Assert` step over it — `kind: delta` hard, `kind:
+vision` soft.
 
 ## Prerequisites once implemented
 
