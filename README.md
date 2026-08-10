@@ -730,9 +730,28 @@ exclusive `flock`, the asset-claim ledger and the minimal `ModsConfig` it writes
 run's numbers attributable to a known build. A second supervisor launching RimWorld beside that would
 boot the machine's real mod list outside the lock.
 
-They are not alternatives, though — they consume the *same* two environment variables, so a GABS
-entry can attach to a game this runner launched. Speaking GABP directly here makes that easier rather
-than harder, because it is what made the endpoint deterministic in the first place.
+### Where GABS does belong
+
+GABS is worth having for the *other* job — driving a live game from an MCP client, interactively,
+outside any scenario. It is installed on this machine as `~/.local/bin/gabs`, configured in
+`~/.gabs/config.json` as game id `rimworld`, and registered as a user-scoped MCP server.
+
+Two constraints make that setup safe to leave in place, and both are worth understanding before
+changing it:
+
+- **It launches into its own save-data root**
+  (`-savedatafolder=/home/deck/.local/share/rimworld-gabs`), which gives it its own
+  `Config/ModsConfig.xml` holding a small bridge-enabled mod list. RimBridgeServer is deliberately
+  **not** enabled in the normal game's list: it opens a listening socket, sets
+  `Application.runInBackground`, and forces the TPS counter on. Those are fine in a dev session and
+  not fine in someone's actual save.
+- **A GABS session and a harness run cannot coexist.** The run guard refuses to start while any
+  `RimWorldLinux` is alive, and GABS knows nothing about the `flock` or the ledger. Stop the GABS
+  session before running scenarios. This is not hypothetical — the first attempt to verify the GABS
+  launch had to be abandoned because another agent's run was mid-flight.
+
+So: **GABS for interactive inspection, `--bridge` for runs.** They consume the same two environment
+variables, so the split is a workflow choice rather than a technical fork.
 
 ### Timeouts are a measurement
 
