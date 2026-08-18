@@ -555,6 +555,7 @@ authored scenarios can't overwrite each other's images.
 | `--suite <list.txt>` | Run the scenarios named in a list file. |
 | `--isolation=auto\|always\|never` | How hard a suite works to isolate one scenario from the next. |
 | `--no-teardown` | Leave symlinks / `ModsConfig` / `autostart.rws` in place for post-mortem debugging. |
+| `--hold` | Do not quit or kill the game when the run finishes. The report is written and the scenario ends as usual; then the UI comes back, the clock unpauses, and the game is left running to play. Implies `--no-teardown`. For inspecting a world state a scenario built — a season, an hour, a weather, a camera — that would take minutes of dev-menu poking to reproduce by hand. **The live game blocks the next run** (this script refuses to start while any `RimWorldLinux` is alive), so close it, then roll the install back with `--recover-only`. |
 | `--delete-frames` | Delete timelapse PNGs once stitched into video. |
 | `--without-dlc <packageId>` | Leave an installed DLC out of this run's `ModsConfig` (e.g. `ludeon.rimworld.odyssey`). Repeatable. For exercising a scenario's skip-without-the-DLC path on a machine that owns the DLC — otherwise that branch is code nobody can run. |
 | `--profiler` | Activate Dubs Performance Analyzer (Workshop 2038874626) for this run. **On by default**; passing it explicitly only changes one thing — a missing analyzer becomes a hard failure instead of a warning, because you asked for it by name. |

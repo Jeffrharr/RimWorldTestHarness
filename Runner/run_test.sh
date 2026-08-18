@@ -69,6 +69,14 @@
 #                          may contain ':'.
 #   --recover-only         roll back an abandoned ledger, report, and exit without running anything.
 #   --no-teardown          leave symlinks/ModsConfig/autostart.rws in place afterwards
+#   --hold                 do not quit or kill the game when the run finishes. The report is written
+#                          and the scenario ends as usual; then the UI comes back, the clock unpauses
+#                          and the game is left running to play. Implies --no-teardown. For looking at
+#                          a world state a scenario built — a season, an hour, a weather, a camera —
+#                          that would take minutes of dev-menu poking to reproduce by hand.
+#                          NOTE the live game blocks the next run: this script refuses to start while
+#                          any RimWorldLinux is alive. Close it, then roll the install back with
+#                          --recover-only.
 #   --delete-frames        delete timelapse PNGs once stitched
 #   --isolation=POLICY     auto (default) | always | never — how hard a suite works to isolate one
 #                          scenario from the next. See Shared/SuitePlan.cs.
@@ -225,6 +233,7 @@ fail() {
 SCENARIOS=()
 SUITE_LIST_IN=""
 NO_TEARDOWN=0
+HOLD=0
 DELETE_FRAMES=0
 ISOLATION="auto"
 PRINT_CONFIG=0
@@ -296,7 +305,7 @@ abspath() { echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; }
 
 usage() {
     echo "[run_test] usage: run_test.sh <scenario.json> [more.json ...] [--suite <list.txt>]" >&2
-    echo "[run_test]        [--mod <mod-folder>]... [--no-teardown] [--delete-frames]" >&2
+    echo "[run_test]        [--mod <mod-folder>]... [--no-teardown] [--hold] [--delete-frames]" >&2
     echo "[run_test]        [--isolation=auto|always|never] [--without-dlc <packageId>]..." >&2
     echo "[run_test]        [--mod-overlay <worktree>]... [--install <src-dir>:<dest-dir>]..." >&2
     echo "[run_test]        [--profiler | --no-profiler] [--print-config] [--recover-only]" >&2
@@ -306,6 +315,11 @@ usage() {
 while (( $# )); do
     case "$1" in
         --no-teardown) NO_TEARDOWN=1 ;;
+    # --hold implies --no-teardown, and that is not a convenience. The game is still running with the
+    # overlaid assemblies mapped; rolling the claims back under it would restore the main checkout's
+    # DLLs while the branch build is the one actually loaded, so the running session and the next
+    # launch would disagree about what is installed.
+    --hold) HOLD=1; NO_TEARDOWN=1 ;;
         --without-dlc) shift; EXCLUDED_DLC+=("$(echo "${1:-}" | tr '[:upper:]' '[:lower:]')") ;;
         --without-dlc=*) EXCLUDED_DLC+=("$(echo "${1#--without-dlc=}" | tr '[:upper:]' '[:lower:]')") ;;
         --delete-frames) DELETE_FRAMES=1 ;;
@@ -1021,7 +1035,14 @@ cleanup() {
     if [[ $cleanup_done -eq 1 ]]; then return; fi
     cleanup_done=1
     log "Cleaning up..."
-    kill_rimworld
+    # --hold leaves the game running deliberately, so the one thing cleanup must NOT do is the thing
+    # cleanup exists to do. Everything else still runs: the ledger stays open and recorded exactly as
+    # it does under --no-teardown, which is what the next run rolls back.
+    if (( HOLD )); then
+        log "--hold: leaving RimWorld (PID ${RIMWORLD_PID:-?}) running. It is yours now."
+    else
+        kill_rimworld
+    fi
     if [[ $NO_TEARDOWN -eq 0 ]]; then
         teardown
         # Only once teardown has actually put everything back. If it could not, the ledger is still
@@ -1496,6 +1517,9 @@ launch_rimworld() {
         # carries a reason THIS script already established (the analyzer is not installed) so the mod
         # does not have to guess between "absent from the machine" and "present but not loaded".
         harness_env+=(RWTH_PROFILE="$PROFILER")
+        # Told rather than inferred, like every other mode: the mod must decide whether to quit from
+        # the runner's stated intent, not from anything a scenario happened to do.
+        (( HOLD )) && harness_env+=(RWTH_HOLD=1)
         if [[ -n "$PROFILER_SKIP_REASON" ]]; then
             harness_env+=(RWTH_PROFILE_SKIP="$PROFILER_SKIP_REASON")
         fi
@@ -1513,15 +1537,53 @@ launch_rimworld() {
             harness_env+=(GABP_SERVER_PORT="$BRIDGE_PORT" GABP_TOKEN="$BRIDGE_TOKEN")
         fi
 
+        # --hold launches the game in its OWN SESSION, and without that the flag does not work at all.
+        #
+        # A backgrounded child sits in this script's process group, so when the script exits the group
+        # is torn down and the game takes the hangup with it — it shuts down cleanly, logs a normal
+        # Unity shutdown, and leaves no error anywhere. That is exactly what the first --hold run did:
+        # the mod logged "holding", this script logged "leaving RimWorld running", and the game was
+        # gone seconds later with nothing to say why. setsid detaches it so it outlives us.
+        #
+        # $! STAYS CORRECT. setsid only forks when it is already a process-group leader, and this
+        # script does not enable job control (no `set -m`), so a background child shares our group,
+        # setsid is not a leader, and it execs the game in place rather than forking. The guard below
+        # verifies that rather than trusting it, because if it ever stopped being true every liveness
+        # check in this run would be watching a process that had already exited.
+        # Stdin from /dev/null on EVERY path, not just --hold. The game never reads it, and an
+        # inherited stdin that closes is one of the ways a detached process gets told to go away —
+        # so making it uniform is one less difference between the path that is exercised constantly
+        # and the path that is exercised once in a while.
+        #
+        # setsid AND nohup, and both are load-bearing. Measured: with setsid alone the game died one
+        # second after this script exited — setsid gives it its own session, which stops a
+        # TERMINAL-driven hangup, but does nothing about a SIGHUP delivered deliberately to the
+        # process tree on teardown. nohup sets that signal to ignore and the disposition survives the
+        # exec into the game. Stdin comes from /dev/null for the same reason: an inherited stdin that
+        # closes is another way for a detached process to be told to go away.
+        local launcher=()
+        (( HOLD )) && launcher=(setsid nohup)
+
         env "${harness_env[@]}" RWTH_REPORT="$REPORT_PATH" \
+            "${launcher[@]}" \
             "$RIMWORLD/RimWorldLinux" --no-sandbox \
             "${quicktest_arg[@]}" \
             "${savedata_arg[@]}" \
             -logfile "$PLAYER_LOG" \
-            2>"$RIMWORLD_STDERR" 9>&- &
+            </dev/null 2>"$RIMWORLD_STDERR" 9>&- &
         # 9>&- closes the run lock in the child: flock lives on the open file description, which a
         # forked game would otherwise keep held past our exit and lock out every later run.
         RIMWORLD_PID=$!
+
+        if (( HOLD )); then
+            # Give exec a moment, then check the PID we are about to watch is really the game. A
+            # forking setsid would leave us holding a pid that exits immediately, which presents as
+            # "the game died during startup" for a reason that has nothing to do with the game.
+            sleep 1
+            if [[ "$(cat "/proc/$RIMWORLD_PID/comm" 2>/dev/null)" != "RimWorldLinux" ]]; then
+                fail "--hold: setsid forked, so PID $RIMWORLD_PID is not the game and this run could not track it. Launch without --hold, or teach this script to resolve the child pid."
+            fi
+        fi
         log "RimWorldLinux PID: $RIMWORLD_PID"
 
         local waited=0
@@ -1696,10 +1758,22 @@ assert_no_type_load_failure
 
 # Give RimWorldLinux a moment to quit on its own (ScenarioDriver calls Application.Quit()
 # right after writing the report); kill it if it's still around after that.
-sleep 3
-if rimworld_alive; then
-    log "RimWorld still running after report — stopping it."
-    kill_rimworld
+#
+# THIS IS THE SITE THAT DEFEATS --hold, and it is worth naming because the flag looks like it works
+# without it. Under --hold the driver deliberately does NOT call Application.Quit, so "still running
+# after the report" stops being the failure this check exists to catch and becomes the whole point.
+# Skipping it here rather than in cleanup alone: cleanup is where the OTHER kill lives, and guarding
+# only that one produced a run that logged "leaving RimWorld running", logged the mod's own "holding"
+# message, and still had the game gone seconds later with nothing anywhere to say which of the three
+# kill sites did it.
+if (( HOLD )); then
+    log "--hold: the game is not going to quit on its own, which is the point. Leaving it up."
+else
+    sleep 3
+    if rimworld_alive; then
+        log "RimWorld still running after report — stopping it."
+        kill_rimworld
+    fi
 fi
 
 # ---------------------------------------------------------------------------
