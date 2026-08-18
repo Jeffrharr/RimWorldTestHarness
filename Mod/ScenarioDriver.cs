@@ -606,7 +606,39 @@ public static class ScenarioDriver
         // later frames), so the run's last screenshot leaves it hidden. Clearing it here keeps that
         // contained to the run.
         HarnessDebugActions.SetScreenshotMode(false);
+
+        if (HarnessRuntime.HoldOpen)
+        {
+            HoldGameOpen();
+            return;
+        }
+
         Application.Quit();
+    }
+
+    // --hold: hand the game back to a person instead of quitting it.
+    //
+    // Everything above this point has already run — the report is written, the marker is logged, the
+    // batch-only flags are released and screenshot mode is cleared — so what is left is the
+    // difference between a run that ends and a session that continues. Three things, and each is
+    // something a scenario does that a player would not want to be left holding:
+    //
+    //   * THE CLOCK IS PAUSED. Scenarios pause it so a step's effects are observed at a known tick,
+    //     and a colony handed over paused looks frozen rather than playable.
+    //   * DEV MODE IS FORCED. Cleared just above, which returns it to whatever the player's own
+    //     Prefs say. Left alone here on purpose: the runner writes devMode=True into Prefs for the
+    //     autostart save, so it stays available, which is what somebody inspecting a scenario's world
+    //     actually wants.
+    //   * DEV WINDOWS may be open, because screenshots close them and nothing reopens them. Also
+    //     left alone: an empty screen is the better hand-over.
+    private static void HoldGameOpen()
+    {
+        if (Find.TickManager != null)
+            Find.TickManager.CurTimeSpeed = TimeSpeed.Normal;
+
+        Log.Message(
+            "RWTH: run complete and holding. The report is written and the harness is idle; " +
+            "this game is now yours to play. Close it normally when you are done.");
     }
 
     // A suite that aborted must still account for every scenario it was asked to run. Leaving the

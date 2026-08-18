@@ -31,6 +31,10 @@ public static class HarnessMod
     // map-mutating suite was isolated. Suite runs only.
     private const string EnvReloadSave = "RWTH_RELOAD_SAVE";
 
+    // Set by run_test.sh --hold. Any non-empty value means "do not quit when the run ends"; see
+    // HarnessRuntime.HoldOpen for what that is for.
+    private const string EnvHold = "RWTH_HOLD";
+
     static HarnessMod()
     {
         new Harmony("joof.rimworldtestharness").PatchAll();
@@ -68,6 +72,13 @@ public static class HarnessMod
             Log.Error($"[RimWorldTestHarness] {EnvScenario}/{EnvSuite} set but {EnvReport} is not — nothing will run.");
             return;
         }
+
+        // Read before either driver starts, for the same reason the profiling mode is: whether the run
+        // quits at the end is the runner's stated intent and must not depend on anything a scenario
+        // did. Any non-empty value means hold.
+        HarnessRuntime.HoldOpen = Read(EnvHold) != null;
+        if (HarnessRuntime.HoldOpen)
+            Log.Message("RWTH: --hold — the game will stay open when the run finishes.");
 
         // Read here rather than lazily at first use, so that "was this run profiled?" is answered once,
         // from the runner's stated intent, before any scenario has a chance to observe a different

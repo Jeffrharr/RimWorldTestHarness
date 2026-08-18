@@ -17,6 +17,19 @@ namespace RimWorldTestHarness.Mod;
 //     deliberate, opt-in state change, safe in either mode.
 public static class HarnessRuntime
 {
+    // Whether the run stays open once its last scenario finishes, instead of quitting the game.
+    //
+    // BATCH-ONLY, AND DELIBERATELY NOT "is a driver active" EITHER. It exists for hands-on inspection:
+    // a scenario builds a specific world state — a season, an hour, a weather, a camera — that would
+    // take a person several minutes of dev-menu poking to reproduce, and then the run throws it away
+    // by quitting. With this set the driver finishes normally, writes its report, hands the UI back
+    // and leaves the game running so somebody can look at what the scenario built and play on from
+    // it.
+    //
+    // The live companion driver never sets this: it is already attached to a game nobody was going to
+    // quit, so there is nothing for it to hold open.
+    public static bool HoldOpen { get; set; }
+
     // Batch scenarios set this true for the duration of a run so Prefs.DevMode reads true and the
     // fixture autostart-save loads. Live companion mode leaves it false.
     public static bool ForceDevMode { get; set; }
