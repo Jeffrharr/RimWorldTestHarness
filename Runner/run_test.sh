@@ -360,14 +360,7 @@ done
 # --mod-overlay fails before the run takes the lock rather than after — and so --print-config can
 # show what would be installed where.
 read_package_id() {
-    python3 - "$1" <<'PYEOF'
-import re, sys
-with open(f"{sys.argv[1]}/About/About.xml", encoding="utf-8") as f:
-    m = re.search(r"<packageId>(.*?)</packageId>", f.read(), re.S | re.I)
-if not m:
-    sys.exit(f"no <packageId> in {sys.argv[1]}/About/About.xml")
-print(m.group(1).strip().lower())
-PYEOF
+    python3 "$SCRIPT_DIR/about_xml.py" "$1"
 }
 
 # Find the mod folder the game will actually load for a packageId — the one an overlay has to land
@@ -852,8 +845,11 @@ done
 MOD_UT_IDS_JSON="[]"
 MOD_UT_AFTER_HARNESS_JSON="[]"
 if (( ${#MOD_UT_DIRS[@]} )); then
-    MOD_UT_SPLIT_JSON="$(python3 - ${MOD_UT_DIRS[@]+"${MOD_UT_DIRS[@]}"} <<'PYEOF'
-import json, re, sys
+    MOD_UT_SPLIT_JSON="$(SCRIPT_DIR="$SCRIPT_DIR" python3 - ${MOD_UT_DIRS[@]+"${MOD_UT_DIRS[@]}"} <<'PYEOF'
+import json, os, re, sys
+
+sys.path.insert(0, os.environ["SCRIPT_DIR"])
+import about_xml
 
 HARNESS = "joof.rimworldtestharness"
 
@@ -861,10 +857,7 @@ ids, after = [], []
 for d in sys.argv[1:]:
     with open(f"{d}/About/About.xml", encoding="utf-8") as f:
         about = f.read()
-    m = re.search(r"<packageId>(.*?)</packageId>", about, re.S | re.I)
-    if not m:
-        sys.exit(f"no <packageId> in {d}/About/About.xml")
-    pid = m.group(1).strip().lower()
+    pid = about_xml.package_id(d)
     ids.append(pid)
     # A probe-bridge mod IMPLEMENTS harness interfaces (IProbe, IStepAction), so its assembly cannot
     # even be type-scanned until RimWorldTestHarness.dll is loaded — RimWorld loads mod assemblies in
