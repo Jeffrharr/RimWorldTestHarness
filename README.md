@@ -181,7 +181,7 @@ lighting would happily validate against.
 | Type | Args | Notes |
 |---|---|---|
 | `Probe` | `probeName`, `expectedValue`, `tolerance`, `pinnedUnder` | `probeName` must match a registered `IProbe.Name`. This is what decides pass/fail. `pinnedUnder` (`any` default \| `profiler` \| `no-profiler`) records which profiling mode `expectedValue` was measured under and **fails the scenario** on a mismatch — see "Profiling" below. |
-| `Screenshot` | `fileName`, `hideUi` | Written next to the report. `hideUi` defaults to `true` (blanks the HUD via RimWorld's screenshot mode). |
+| `Screenshot` | `fileName`, `hideUi` | Written next to the report. `hideUi` defaults to `true` (blanks the HUD via RimWorld's screenshot mode, and closes any open dev window). **The first capture of a run is not clean — see below.** |
 | `SetFeature` | `featureName`, `enabled` | Flips a feature flag your mod registered. The point is A/B: screenshot with an effect off, flip it on, screenshot again — in one boot. |
 | `Assert` | `kind`, `images`, `prompt`, `expect`, `confidenceGate`, `logLines` | `kind: vision` — a rubric for an LLM judge over named screenshots plus the game's recent warnings/errors. Soft gate: only a *confident* fail blocks. See `Runner/README.md`, "Vision asserts". |
 | `ProfileAssert` | `table`, `label`, `metric`, `max` \| `min` \| `expectedValue`+`tolerance` | Checks one number out of a profile table (see "Profiling" below). Lands in the same `ProbeChecks` gate a `Probe` step does. |
@@ -217,6 +217,33 @@ clock is jumped and the render is allowed to settle, which is why `settleFrames`
 is the same thing at the other end of the scale: still captures, exact jumps, no recording. Both
 deliberately use jumps rather than `FastForward`, whose ticks keep running through the settle frames
 and the screenshot flush and would space the captures unevenly.
+
+#### `hideUi`, and the first capture of a run
+
+`hideUi` defaults to **true**, so you get it without asking. It sets `Find.UIRoot.screenshotMode` and
+closes any open `EditWindow` — the second half matters because every run forces dev mode on, and
+RimWorld auto-opens the log window on the first warning, which a stock mod folder produces before
+your first step runs.
+
+**The first `Screenshot` in a run comes out with the HUD anyway.** Screenshot mode is set in the same
+frame as the capture, and `ScreenCapture.CaptureScreenshot` grabs at end-of-frame; the flag lands in
+time for rendering but the frame Unity hands back for that first call is the one already in flight.
+From the second capture on it is clean. So:
+
+```json
+{ "type": "Screenshot", "args": { "fileName": "warmup.png" } },
+{ "type": "Screenshot", "args": { "fileName": "the_one_you_mean.png" } }
+```
+
+Throw the first away. Naming it `*_warmup` or `*_discard` is the convention; scenarios that skip it
+get a first frame carrying the clock, alerts and message log, and **those differ from run to run** —
+which turns up later as a mystifying A/B diff concentrated in one screen corner, attributed to
+whatever change is being tested. A `Timelapse` or `TickLapse` has the same property in its first
+frame.
+
+Pass `hideUi: false` when the UI *is* the subject — a widget, a readout, an alert. Nothing restores
+it afterwards during the run (the driver clears it at the end), so a scenario that turns the HUD back
+on for one shot leaves it on for the rest.
 
 ### Profiling: per-patch cost and call count
 
