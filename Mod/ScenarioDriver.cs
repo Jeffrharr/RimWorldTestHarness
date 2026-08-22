@@ -446,6 +446,11 @@ public static class ScenarioDriver
         // so it must not turn a good run red. It rides on the report (and out through run_test.sh) so
         // that a run which needed dialogs cleared says so.
         report.DismissedDialogs.AddRange(DialogGuard.DismissedTypeNames);
+        // Same principle in the other direction: leaving a dialog up was asked for by --keep-dialogs,
+        // so it is not an error either — but it IS the first thing to check when such a run stalls or
+        // a screenshot comes back with something unexpected on top of it, so it travels on the report
+        // rather than living only in Player.log.
+        report.KeptDialogs.AddRange(DialogGuard.KeptTypeNames);
         // Errors count toward Pass, not just probe checks: a scenario whose steps failed verified less
         // than it claims to, and with no Probe step at all an errors-ignoring gate reports Pass over
         // an empty check list. See ReportComparer's two-arg overload.

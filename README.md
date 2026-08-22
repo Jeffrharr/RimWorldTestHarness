@@ -583,6 +583,7 @@ authored scenarios can't overwrite each other's images.
 | `--isolation=auto\|always\|never` | How hard a suite works to isolate one scenario from the next. |
 | `--no-teardown` | Leave symlinks / `ModsConfig` / `autostart.rws` in place for post-mortem debugging. |
 | `--hold` | Do not quit or kill the game when the run finishes. The report is written and the scenario ends as usual; then the UI comes back, the clock unpauses, and the game is left running to play. Implies `--no-teardown`. For inspecting a world state a scenario built — a season, an hour, a weather, a camera — that would take minutes of dev-menu poking to reproduce by hand. **The live game blocks the next run** (this script refuses to start while any `RimWorldLinux` is alive), so close it, then roll the install back with `--recover-only`. |
+| `--keep-dialogs` | Stop the dialog guard clearing blocking modals, so a window a mod raises stays on screen and a `Screenshot` step can photograph it. **For looking at UI, not for testing behaviour** — see [Photographing your own UI](#photographing-your-own-ui). |
 | `--delete-frames` | Delete timelapse PNGs once stitched into video. |
 | `--without-dlc <packageId>` | Leave an installed DLC out of this run's `ModsConfig` (e.g. `ludeon.rimworld.odyssey`). Repeatable. For exercising a scenario's skip-without-the-DLC path on a machine that owns the DLC — otherwise that branch is code nobody can run. |
 | `--profiler` | Activate Dubs Performance Analyzer (Workshop 2038874626) for this run. **On by default**; passing it explicitly only changes one thing — a missing analyzer becomes a hard failure instead of a warning, because you asked for it by name. |
@@ -600,6 +601,40 @@ Overridable environment: `RWTH_CONFIG_DIR` (game save-data root), `RWTH_RUN_TMP_
 `RWTH_LOCK_FILE`, and `RWTH_ISOLATE_SAVEDATA=1` (opt-in: gives the run its own save-data root via
 RimWorld's `-savedatafolder=` arg instead of mutating yours — implemented and asserted, but not yet
 validated by a live run).
+
+### Photographing your own UI
+
+The dialog guard exists to stop the game's modals stranding a run, and it does not know your window
+from RimWorld's — so a mod that raises a `Window` with `forcePause` or `absorbInputAroundWindow` set
+finds it refused before it ever reaches the stack. That is right for behaviour tests and exactly
+wrong when the window IS the thing you are working on. `--keep-dialogs` stands the guard down.
+
+```bash
+Runner/run_test.sh --keep-dialogs Scenarios/keep_dialogs.json
+```
+
+`Scenarios/keep_dialogs.json` is the self-test, and it is worth running both ways once: without the
+flag the screenshot is a plain colony and the report names the window under `DismissedDialogs`; with
+it, the same screenshot has the dialog in it and the window moves to `KeptDialogs`.
+
+Three things to know before reaching for it.
+
+**Wait in FRAMES, not ticks.** The driver pumps off `Root_Play.Update`, so it keeps running while a
+`forcePause` modal has the clock stopped — which is the whole reason a `Screenshot` step can
+photograph a window that would strand a `FastForward`. A tick-advancing step under this flag
+(`FastForward`, `TickLapse`, a tick-counted `Wait`) will sit there until the runner's timeout. That
+is not a bug in the flag; it is the failure the guard prevents, deliberately re-enabled.
+
+**Read `KeptDialogs` when something looks wrong.** Every window the guard leaves up is still
+classified and reported — named once in the run's report and printed by the runner — so a stall or an
+unexpected object in a frame is a one-line diagnosis rather than a mystery. That reporting is the
+only reason this flag is safe to hand out.
+
+**A main-menu window cannot be photographed this way, and no flag can change that.** Each `UIRoot`
+owns its own `WindowStack`, so anything raised at the menu — from a `UIRoot_Entry.Init` postfix, say
+— is discarded the moment the game loads and `UIRoot_Play` takes over, which every scenario does
+before its first step. For those, the flag still proves the window was constructed and stacked (the
+guard logs it), but seeing it means booting the game normally.
 
 ---
 
@@ -900,6 +935,9 @@ fails, subscribe through the in-game Workshop UI instead.
   clicks OK on anything the game asks is one that could hide a mod raising an error dialog every tick,
   which would present as a perfectly clean run. `Scenarios/dialog_guard.json` proves it works by
   raising the real dialogs itself.
+
+  If the window you care about is your OWN, `--keep-dialogs` turns all of this off for the run — see
+  [Photographing your own UI](#photographing-your-own-ui).
 
 - **Screenshots need a real GPU-rendered frame** — the runner deliberately does not pass
   `-batchmode`/`-nographics`.

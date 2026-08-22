@@ -69,6 +69,13 @@
 #                          may contain ':'.
 #   --recover-only         roll back an abandoned ledger, report, and exit without running anything.
 #   --no-teardown          leave symlinks/ModsConfig/autostart.rws in place afterwards
+#   --keep-dialogs         stop DialogGuard clearing blocking modals, so a window a mod raises stays
+#                          on screen and can be photographed by a Screenshot step. FOR LOOKING AT UI,
+#                          NOT FOR TESTING BEHAVIOUR: leaving a forcePause modal up stops TicksGame,
+#                          so any step that advances ticks (FastForward, TickLapse, a Wait in ticks)
+#                          will sit there until the run times out. What was left up is named in the
+#                          report's KeptDialogs and printed below, so a stall is diagnosable rather
+#                          than mysterious. Pairs naturally with --hold.
 #   --hold                 do not quit or kill the game when the run finishes. The report is written
 #                          and the scenario ends as usual; then the UI comes back, the clock unpauses
 #                          and the game is left running to play. Implies --no-teardown. For looking at
@@ -234,6 +241,7 @@ SCENARIOS=()
 SUITE_LIST_IN=""
 NO_TEARDOWN=0
 HOLD=0
+KEEP_DIALOGS=0
 DELETE_FRAMES=0
 ISOLATION="auto"
 PRINT_CONFIG=0
@@ -306,6 +314,7 @@ abspath() { echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; }
 usage() {
     echo "[run_test] usage: run_test.sh <scenario.json> [more.json ...] [--suite <list.txt>]" >&2
     echo "[run_test]        [--mod <mod-folder>]... [--no-teardown] [--hold] [--delete-frames]" >&2
+    echo "[run_test]        [--keep-dialogs]" >&2
     echo "[run_test]        [--isolation=auto|always|never] [--without-dlc <packageId>]..." >&2
     echo "[run_test]        [--mod-overlay <worktree>]... [--install <src-dir>:<dest-dir>]..." >&2
     echo "[run_test]        [--profiler | --no-profiler] [--print-config] [--recover-only]" >&2
@@ -315,6 +324,11 @@ usage() {
 while (( $# )); do
     case "$1" in
         --no-teardown) NO_TEARDOWN=1 ;;
+        # Deliberately does NOT imply --hold, unlike the pairing the help text suggests. The two are
+        # usually wanted together, but a scenario that raises a window, screenshots it and ends is a
+        # perfectly good non-interactive use, and quietly keeping the game alive afterwards would
+        # leave a process and a claimed ledger behind for somebody who never asked for either.
+        --keep-dialogs) KEEP_DIALOGS=1 ;;
     # --hold implies --no-teardown, and that is not a convenience. The game is still running with the
     # overlaid assemblies mapped; rolling the claims back under it would restore the main checkout's
     # DLLs while the branch build is the one actually loaded, so the running session and the next
@@ -1520,6 +1534,7 @@ launch_rimworld() {
         # Told rather than inferred, like every other mode: the mod must decide whether to quit from
         # the runner's stated intent, not from anything a scenario happened to do.
         (( HOLD )) && harness_env+=(RWTH_HOLD=1)
+        (( KEEP_DIALOGS )) && harness_env+=(RWTH_KEEP_DIALOGS=1)
         if [[ -n "$PROFILER_SKIP_REASON" ]]; then
             harness_env+=(RWTH_PROFILE_SKIP="$PROFILER_SKIP_REASON")
         fi
@@ -1824,6 +1839,11 @@ def print_scenario(scenario, indent="  "):
     dialogs = scenario.get("DismissedDialogs", [])
     for dialog in dialogs:
         print(f"[run_test]{indent}  dismissed dialog: {dialog}")
+    # Printed even though --keep-dialogs was explicitly asked for. The person reading this output is
+    # the one who will next wonder why a screenshot has an unexpected window in it, or why a
+    # FastForward sat there until the timeout, and the answer is this line.
+    for dialog in scenario.get("KeptDialogs", []):
+        print(f"[run_test]{indent}  kept dialog (--keep-dialogs): {dialog}")
     for err in scenario.get("Errors", []):
         print(f"[run_test]{indent}  ERROR: {err}")
 
