@@ -35,6 +35,17 @@ public static class BlockingWindowPolicy
         // Close it outright. For everything else that blocks, there is nothing to supply — the
         // dialog wants a click, and any click will do.
         ForceClose,
+
+        // Blocking, and the harness would normally have acted on it — but --keep-dialogs is on, so
+        // it stays up.
+        //
+        // A DISTINCT VALUE RATHER THAN Leave, and the distinction is what makes the flag survivable.
+        // The two are the same instruction to the adapter ("do nothing") and completely different
+        // facts about the run: Leave means "this window was never in my way", this means "this window
+        // is the kind that strands runs and I have been told not to touch it". Collapsing them throws
+        // away the only signal that would explain a stalled FastForward — and an unexplained stall is
+        // exactly the 900s mystery this whole file exists to have prevented.
+        LeaveUnderKeepDialogs,
     }
 
     // The name the harness supplies when the dialog offers none. Fixed rather than randomised because
@@ -82,8 +93,14 @@ public static class BlockingWindowPolicy
     // type check (`window is Dialog_GiveName`) rather than by matching a name here, because the
     // interesting types are SUBCLASSES — Dialog_NamePlayerColony, Dialog_NamePlayerFactionOnly and
     // whatever a mod adds — and a string match on the base name would miss every one of them.
+    //
+    // `keepDialogs` is run_test.sh's --keep-dialogs, for looking at UI rather than testing behaviour.
+    // It is checked LAST, after the window has been fully classified, and that ordering is what lets
+    // the adapter report which windows it left up and why: an early return would answer "do nothing"
+    // without ever working out whether there was anything to do.
     public static Decision Decide(
-        string fullTypeName, bool forcePause, bool absorbInputAroundWindow, bool isGiveNameDialog)
+        string fullTypeName, bool forcePause, bool absorbInputAroundWindow, bool isGiveNameDialog,
+        bool keepDialogs = false)
     {
         if (!IsBlocking(forcePause, absorbInputAroundWindow))
             return Decision.Leave;
@@ -91,6 +108,15 @@ public static class BlockingWindowPolicy
         if (IsHarnessOwned(fullTypeName))
             return Decision.Leave;
 
+        if (keepDialogs)
+            return Decision.LeaveUnderKeepDialogs;
+
         return isGiveNameDialog ? Decision.AcceptWithGeneratedName : Decision.ForceClose;
     }
+
+    // Whether a decision means the adapter touches the window. Named rather than left as a `!=`
+    // at three call sites, because "which of these four values mean act" is precisely the question
+    // a fifth value added later would silently answer wrong.
+    public static bool ActsOnWindow(Decision decision) =>
+        decision == Decision.AcceptWithGeneratedName || decision == Decision.ForceClose;
 }

@@ -33,9 +33,34 @@ public static class DialogGuard
     // by the driver when a scenario begins so one scenario's dialogs are never attributed to the next.
     private static readonly List<string> Dismissed = new List<string>();
 
+    // Window type names left up under --keep-dialogs, deduplicated.
+    //
+    // A SET, UNLIKE Dismissed ABOVE, and that difference is forced by how the two are reached. A
+    // dismissed window is gone the moment it is recorded, so the sweep meets it once. A KEPT window
+    // is still on the stack on the next frame, and the next, and the sweep runs once per frame — an
+    // append-per-sighting would put several thousand identical entries in the report of any run that
+    // left a dialog up for ten seconds, which is every run this flag is for.
+    private static readonly HashSet<string> Kept = new HashSet<string>();
+
     public static IReadOnlyList<string> DismissedTypeNames => Dismissed;
 
-    public static void Reset() => Dismissed.Clear();
+    // Ordered for the report's sake even though the underlying store is a set: the JSON is read by a
+    // person, and a list that reshuffles between runs is one more thing to wonder about.
+    public static IReadOnlyList<string> KeptTypeNames
+    {
+        get
+        {
+            List<string> names = new List<string>(Kept);
+            names.Sort(System.StringComparer.Ordinal);
+            return names;
+        }
+    }
+
+    public static void Reset()
+    {
+        Dismissed.Clear();
+        Kept.Clear();
+    }
 
     // Walks the window stack once and resolves anything blocking. Returns how many it cleared, so a
     // caller can log a single line per frame rather than one per window.
@@ -75,9 +100,7 @@ public static class DialogGuard
             return false;
 
         Type type = window.GetType();
-        BlockingWindowPolicy.Decision decision = BlockingWindowPolicy.Decide(
-            type.FullName, window.forcePause, window.absorbInputAroundWindow,
-            window is Dialog_GiveName);
+        BlockingWindowPolicy.Decision decision = Decide(window, type);
 
         switch (decision)
         {
@@ -87,6 +110,9 @@ public static class DialogGuard
             case BlockingWindowPolicy.Decision.ForceClose:
                 Record(type, "suppressed");
                 return true;
+            case BlockingWindowPolicy.Decision.LeaveUnderKeepDialogs:
+                RecordKept(type);
+                return false;
             default:
                 return false;
         }
@@ -99,9 +125,7 @@ public static class DialogGuard
             return false;
 
         Type type = window.GetType();
-        BlockingWindowPolicy.Decision decision = BlockingWindowPolicy.Decide(
-            type.FullName, window.forcePause, window.absorbInputAroundWindow,
-            window is Dialog_GiveName);
+        BlockingWindowPolicy.Decision decision = Decide(window, type);
 
         switch (decision)
         {
@@ -111,10 +135,21 @@ public static class DialogGuard
                 return AcceptName((Dialog_GiveName)window, type);
             case BlockingWindowPolicy.Decision.ForceClose:
                 return ForceClose(window, type);
+            case BlockingWindowPolicy.Decision.LeaveUnderKeepDialogs:
+                RecordKept(type);
+                return false;
             default:
                 return false;
         }
     }
+
+    // The one place --keep-dialogs is folded in, so the Add-time path and the sweep can never
+    // disagree about whether the flag is on — which they could if each read HarnessRuntime for
+    // itself and one of them were missed when a third entry point is added.
+    private static BlockingWindowPolicy.Decision Decide(Window window, Type type) =>
+        BlockingWindowPolicy.Decide(
+            type.FullName, window.forcePause, window.absorbInputAroundWindow,
+            window is Dialog_GiveName, HarnessRuntime.KeepDialogs);
 
     // Resolves a naming dialog the way clicking OK does: set the field, call the protected Named hook,
     // then remove the window. Reflection because curName/Named/useSecondName are all protected, and
@@ -184,6 +219,20 @@ public static class DialogGuard
         string entry = $"{type.FullName} ({how})";
         Dismissed.Add(entry);
         Log.Message($"RWTH: dismissed blocking dialog {entry}");
+    }
+
+    // Logged on the FIRST sighting only, not on every frame the window stays up. The set does the
+    // deduplication and the log line follows it rather than the sweep, or a run that left one dialog
+    // up for a minute would write a few thousand identical lines into Player.log — which is where
+    // somebody debugging that same run is about to go looking for the reason it stalled.
+    private static void RecordKept(Type type)
+    {
+        if (!Kept.Add(type.FullName))
+            return;
+
+        Log.Message(
+            $"RWTH: --keep-dialogs — leaving blocking dialog {type.FullName} up. "
+            + "Any step that advances ticks will stall while it is on screen.");
     }
 
     // AccessTools rather than Type.GetField: the fields live on Dialog_GiveName while `type` is the

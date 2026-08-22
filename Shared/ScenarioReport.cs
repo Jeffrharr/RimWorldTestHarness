@@ -52,6 +52,21 @@ public sealed class ScenarioReport
     // run_test.sh so "this run needed six dialogs cleared" is something you see rather than infer.
     public List<string> DismissedDialogs { get; set; } = new();
 
+    // Blocking modals the harness would have cleared but LEFT UP because --keep-dialogs was on, one
+    // entry per window type. Always empty without that flag.
+    //
+    // A SEPARATE LIST RATHER THAN AN ENTRY IN DismissedDialogs ABOVE, because they are opposite
+    // facts and the field name is read by people debugging at speed: "dismissed" answers "what did
+    // the harness take away from me", and this answers "what is on screen right now that would
+    // normally not be". Folding them together would make the one list mean nothing without also
+    // reading the flag.
+    //
+    // This is the field to look at first when a --keep-dialogs run stalls. A left-up forcePause modal
+    // stops TicksGame, so FastForward waits for a target that never arrives and the run dies on the
+    // runner's timeout — which is the guard's original failure mode, deliberately re-enabled. Seeing
+    // the window named here turns that from a mystery into a one-line diagnosis.
+    public List<string> KeptDialogs { get; set; } = new();
+
     // Rubrics emitted for an LLM judge, with their verdicts once someone has answered them. Only a
     // confident FAIL affects Pass (see VisionGate); an unjudged one leaves the run provisionally
     // green, which is why the runner prints the pending count rather than rounding it off.

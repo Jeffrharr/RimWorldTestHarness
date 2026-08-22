@@ -1,0 +1,11 @@
+{
+  "name": "keep_dialogs",
+  "saveFile": "minimal_colony.rws",
+  "description": "Self-test for --keep-dialogs, and the A/B is the whole point: run it WITHOUT the flag and the screenshot shows a plain colony with the dialog recorded in DismissedDialogs; run it WITH the flag and the same screenshot shows the message box, with the type named in KeptDialogs instead. One scenario, two runs, and the difference is visible rather than argued.\n\nWaits in FRAMES, not ticks, and that is load-bearing. The driver pumps off Root_Play.Update, so it keeps running while a forcePause modal has the clock stopped -- which is exactly why a Screenshot step can photograph a window that would strand a FastForward. A tick-based wait here would hang the run under the flag and prove nothing about the flag.",
+  "steps": [
+    { "type": "SetTime", "args": { "hour": "12" } },
+    { "type": "RaiseTestDialog", "args": { "kind": "messagebox" } },
+    { "type": "Wait", "args": { "frames": "5" } },
+    { "type": "Screenshot", "args": { "fileName": "keep_dialogs.png" } }
+  ]
+}

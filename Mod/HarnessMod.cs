@@ -35,6 +35,10 @@ public static class HarnessMod
     // HarnessRuntime.HoldOpen for what that is for.
     private const string EnvHold = "RWTH_HOLD";
 
+    // Set by run_test.sh --keep-dialogs. Any non-empty value means "do not touch blocking modals";
+    // see HarnessRuntime.KeepDialogs and DialogGuard.
+    private const string EnvKeepDialogs = "RWTH_KEEP_DIALOGS";
+
     static HarnessMod()
     {
         new Harmony("joof.rimworldtestharness").PatchAll();
@@ -79,6 +83,16 @@ public static class HarnessMod
         HarnessRuntime.HoldOpen = Read(EnvHold) != null;
         if (HarnessRuntime.HoldOpen)
             Log.Message("RWTH: --hold — the game will stay open when the run finishes.");
+
+        // Same treatment, same reason: whether the guard stands down is the runner's stated intent
+        // for the whole run. Announced loudly rather than quietly, because it re-enables the exact
+        // failure mode — a forcePause modal stopping the clock — that the guard exists to prevent,
+        // and somebody reading this log later needs to see that it was asked for.
+        HarnessRuntime.KeepDialogs = Read(EnvKeepDialogs) != null;
+        if (HarnessRuntime.KeepDialogs)
+            Log.Message(
+                "RWTH: --keep-dialogs — blocking modals will be left on screen. Steps that advance "
+                + "ticks (FastForward, TickLapse) will stall while one is up.");
 
         // Read here rather than lazily at first use, so that "was this run profiled?" is answered once,
         // from the runner's stated intent, before any scenario has a chance to observe a different

@@ -30,6 +30,21 @@ public static class HarnessRuntime
     // quit, so there is nothing for it to hold open.
     public static bool HoldOpen { get; set; }
 
+    // Whether DialogGuard stands down and leaves blocking modals on screen. run_test.sh
+    // --keep-dialogs; see DialogGuard for what it changes, and README for when to reach for it.
+    //
+    // BATCH-ONLY, like HoldOpen above, and for the same reason: it is a statement of the runner's
+    // intent for this run, not something a scenario decides. The live companion driver never sets it
+    // because it never suppresses anything in the first place — the guard is gated on a batch
+    // scenario being Active, so a normally-launched game already keeps all of its dialogs.
+    //
+    // It is a DEBUGGING flag and it can strand a run: the whole point of the guard is that a
+    // forcePause modal stops TicksGame, so a scenario left holding one sits in FastForward until the
+    // runner's timeout. That is why the guard still classifies and REPORTS every window it leaves up
+    // rather than silently obeying — an unexplained stall is the exact failure the guard was written
+    // to stop happening.
+    public static bool KeepDialogs { get; set; }
+
     // Batch scenarios set this true for the duration of a run so Prefs.DevMode reads true and the
     // fixture autostart-save loads. Live companion mode leaves it false.
     public static bool ForceDevMode { get; set; }
