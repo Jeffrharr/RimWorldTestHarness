@@ -97,8 +97,21 @@ public enum ScenarioResidue
     // soft-resettable and a Profile step therefore costs a save reload before whatever follows it.
     Profiler = 1 << 12,
 
+    // A Window was put on the stack by RaiseWindow (or RaiseTestDialog) and may still be there.
+    //
+    // NORMALLY IT IS NOT — the dialog guard refuses a blocking window at Add, so under ordinary
+    // settings this residue describes something that was cleared a frame later and is listed anyway.
+    // Under --keep-dialogs it is real: the window stays up, and the next scenario in the suite opens
+    // with somebody else's modal covering the middle of every screenshot it takes, which is a
+    // contamination that looks like a rendering bug rather than like leftover state.
+    //
+    // Not soft-resettable. WorldStateReset restores scalars it captured; it has no business closing
+    // windows, and a window a scenario deliberately raised is not obviously the harness's to remove
+    // — the reload is the honest way to be sure it is gone.
+    Windows = 1 << 13,
+
     All = Clock | Latitude | FeatureFlags | TimeSpeed | Camera | ScreenshotMode | Map |
-          GameConditions | Weather | Biome | NewMap | TileProperties | Profiler,
+          GameConditions | Weather | Biome | NewMap | TileProperties | Profiler | Windows,
 }
 
 // Pure classification of a step list's residue. Kept in Shared with no game types so the whole

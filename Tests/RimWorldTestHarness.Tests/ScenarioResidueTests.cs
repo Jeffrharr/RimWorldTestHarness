@@ -100,7 +100,8 @@ public class ScenarioResidueTests
             Assert.That(ScenarioResidueAnalyzer.RequiresReload,
                 Is.EqualTo(ScenarioResidue.Map | ScenarioResidue.GameConditions
                     | ScenarioResidue.Weather | ScenarioResidue.Biome | ScenarioResidue.NewMap
-                    | ScenarioResidue.TileProperties | ScenarioResidue.Profiler));
+                    | ScenarioResidue.TileProperties | ScenarioResidue.Profiler
+                    | ScenarioResidue.Windows));
         });
     }
 

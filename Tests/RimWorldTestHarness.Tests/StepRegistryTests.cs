@@ -37,6 +37,9 @@ public class StepRegistryTests
             // Harness self-test only: deliberately raises a blocking modal so
             // Patch_SuppressBlockingWindows can be demonstrated rather than argued for.
             RaiseTestDialogStep.StepType,
+            // The one above raises VANILLA dialogs to test the guard; this raises a mod's OWN window
+            // so it can be photographed. Pair with --keep-dialogs.
+            RaiseWindowStep.StepType,
         };
 
         Assert.That(StepRegistry.KnownTypes, Is.EquivalentTo(expected));

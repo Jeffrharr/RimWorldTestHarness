@@ -37,10 +37,16 @@ public sealed class RaiseTestDialogStep : IStepSpec
 
     public string Type => StepType;
 
-    // No map residue: a suppressed dialog leaves nothing behind, and an accepted naming dialog only
-    // renames the player faction and settlement — world state, not map state, and not something a
-    // later scenario reads. Marked None deliberately rather than by omission.
-    public ScenarioResidue Residue => ScenarioResidue.None;
+    // No MAP residue: an accepted naming dialog only renames the player faction and settlement —
+    // world state, not map state, and not something a later scenario reads.
+    //
+    // Windows, though, now that --keep-dialogs exists. Without that flag this is genuinely None: the
+    // guard refuses the dialog at Add and nothing survives the frame. With it the dialog is still up
+    // when the scenario ends, and the next one in the suite would open with a message box across the
+    // middle of every screenshot it takes. Declared unconditionally rather than by reading the flag,
+    // which would drag runtime state into the pure planner; the cost is a reload in suites that
+    // raise dialogs on purpose, which is a handful of harness self-tests.
+    public ScenarioResidue Residue => ScenarioResidue.Windows;
 
     // Never exposed to the interactive companion channel: it exists to jam a modal in front of
     // whatever is running, which is precisely what that channel promises not to do to a real colony.
