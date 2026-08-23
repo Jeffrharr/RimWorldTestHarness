@@ -201,6 +201,7 @@ still reports success). `PlaceThings` / `SetTerrain` / `SpawnPawn` also take `cl
 | `SetSnow` | `depth`, `width`, `height` | Lays snow over a rectangle by writing depth straight into the grid: `depth` is 0..1 (0 clears, 1 is vanilla's `SnowGrid.MaxDepth`), default 1 over 40x40. Snow is an *accumulation*, not a weather state — `SetWeather SnowHard` only starts flakes falling and depth then grows as a function of the map's temperature, so on a warm tile it never arrives at all. Without this step a snowy scene is unfilmable except by swapping biome and burning minutes of `FastForward`, which still fails above freezing. |
 | `SetSand` | `depth`, `width`, `height` | Odyssey's desert sibling of `SetSnow`, same shape and same reason: nothing in vanilla accrues sand depth on a timescale a scenario can afford to wait out. Requires the Odyssey DLC — `Map.sandGrid` is only constructed when `ModsConfig.OdysseyActive`, so on a run without it the step **skips** (not fails) rather than painting an unrelated mod's install red. |
 | `RaiseTestDialog` | `kind` | **Harness self-test only.** Deliberately puts a blocking vanilla modal on the window stack — `kind: name` raises the two-field colony/faction naming prompt, `kind: messagebox` a paused message box — so the dialog guard below can be *demonstrated* rather than argued for. Nothing a mod author writes needs this. |
+| `RaiseWindow` | `type` | Constructs a `Verse.Window` by full type name (`CelestialLighting.Dialog_UpdateNotice`) and puts it on the stack, so a `Screenshot` step after it photographs your mod's own UI. Needs a public parameterless constructor on the window. **Pair it with `--keep-dialogs`** — most windows worth photographing are modal, and a modal is exactly what the dialog guard refuses. See [Photographing your own UI](#photographing-your-own-ui). |
 | `LookAt` | `zoom` | Aims the camera at the anchor. Omit `zoom` to keep the current one. |
 | `SpawnPawn` | `kind`, `faction`, `gender`, `hediffs`, `count`, `spacing`, `clear` | Generates pawns in a row along +x from the anchor. `kind` is a `PawnKindDef` defName (`Muffalo`, `Colonist`, `Pirate`). `faction` is `wild` (default, no faction — animals/wild men), `player` (your colony), or `hostile` (a deterministic enemy faction). `gender` is `male`/`female` (omit for random). `hediffs` applies health conditions: `"Flu:0.4; MissingBodyPart@Leg; BionicArm@Arm"` — each is a `HediffDef`, optionally `@BodyPartDef` to target a part and/or `:severity`; an unknown def or a part the race lacks fails the step before any pawn spawns. `count` defaults to 1, `spacing` to 2. `clear` (default false) bulldozes the spawn cells first. Any cell that still can't take a pawn is reported, not silently skipped. |
 
@@ -577,14 +578,30 @@ validated by a live run).
 
 ### Photographing your own UI
 
+Two things were in the way, and you usually need both fixes together.
+
 The dialog guard exists to stop the game's modals stranding a run, and it does not know your window
 from RimWorld's — so a mod that raises a `Window` with `forcePause` or `absorbInputAroundWindow` set
 finds it refused before it ever reaches the stack. That is right for behaviour tests and exactly
 wrong when the window IS the thing you are working on. `--keep-dialogs` stands the guard down.
 
+The other half is getting the window up at a moment a scenario can photograph. A window a mod raises
+during play appears when the game decides, and one it raises at the main menu is gone before the
+first step runs. `RaiseWindow` constructs it by name instead:
+
+```json
+{ "type": "RaiseWindow", "args": { "type": "CelestialLighting.Dialog_UpdateNotice" } },
+{ "type": "Wait",        "args": { "frames": "5" } },
+{ "type": "Screenshot",  "args": { "fileName": "notice.png" } }
+```
+
 ```bash
 Runner/run_test.sh --keep-dialogs Scenarios/keep_dialogs.json
 ```
+
+`RaiseWindow` needs a public parameterless constructor on the window — one that reads whatever live
+state it would normally be handed. That is a small ask of the mod and it avoids this step needing a
+serialisation format for constructor arguments.
 
 `Scenarios/keep_dialogs.json` is the self-test, and it is worth running both ways once: without the
 flag the screenshot is a plain colony and the report names the window under `DismissedDialogs`; with
@@ -603,11 +620,12 @@ classified and reported — named once in the run's report and printed by the ru
 unexpected object in a frame is a one-line diagnosis rather than a mystery. That reporting is the
 only reason this flag is safe to hand out.
 
-**A main-menu window cannot be photographed this way, and no flag can change that.** Each `UIRoot`
-owns its own `WindowStack`, so anything raised at the menu — from a `UIRoot_Entry.Init` postfix, say
-— is discarded the moment the game loads and `UIRoot_Play` takes over, which every scenario does
-before its first step. For those, the flag still proves the window was constructed and stacked (the
-guard logs it), but seeing it means booting the game normally.
+**A main-menu window is never on screen by the time a scenario starts, and no flag changes that.**
+Each `UIRoot` owns its own `WindowStack`, so anything raised at the menu — from a `UIRoot_Entry.Init`
+postfix, say — is discarded the moment the game loads and `UIRoot_Play` takes over, which every
+scenario does before its first step. `RaiseWindow` is the answer: re-raise it inside the scenario and
+photograph that. The real startup path is separately provable from the guard's own log line, which
+names the window it saw at the menu.
 
 ---
 
