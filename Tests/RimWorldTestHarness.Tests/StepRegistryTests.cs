@@ -32,6 +32,7 @@ public class StepRegistryTests
             SetTilePropertiesStep.StepType,
             "Assert",
             LandInOrbitStep.StepType,
+            EnterPocketMapStep.StepType,
             StepArgs.ProfileType, StepArgs.ProfileStartType, StepArgs.ProfileMeasureType,
             StepArgs.ProfileStopType, StepArgs.ProfileAssertType,
             // Harness self-test only: deliberately raises a blocking modal so
@@ -80,6 +81,7 @@ public class StepRegistryTests
     [TestCase("SetWeather")]
     [TestCase("SetBiome")]
     [TestCase(LandInOrbitStep.StepType)]
+    [TestCase(EnterPocketMapStep.StepType)]
     public void MutatingSteps_RequireAReload(string stepType)
     {
         ScenarioResidue residue = ScenarioResidueAnalyzer.OfStep(stepType);
