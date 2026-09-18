@@ -35,6 +35,7 @@ public class StepRegistryTests
             EnterPocketMapStep.StepType,
             StepArgs.ProfileType, StepArgs.ProfileStartType, StepArgs.ProfileMeasureType,
             StepArgs.ProfileStopType, StepArgs.ProfileAssertType,
+            SelectStep.StepType, OpenArchitectStep.StepType, ShowTexturesStep.StepType,
             // Harness self-test only: deliberately raises a blocking modal so
             // Patch_SuppressBlockingWindows can be demonstrated rather than argued for.
             RaiseTestDialogStep.StepType,
@@ -66,6 +67,12 @@ public class StepRegistryTests
             StepArgs.AdvanceTimeType, StepArgs.AdvanceTicksType,
             StepArgs.FastForwardType, StepArgs.ProbeType, StepArgs.ScreenshotType,
             StepArgs.SetFeatureType,
+            // The three UI steps. They mutate no world state at all — a selection, an open main tab
+            // and a harness window, each undone by one keypress — which is a weaker claim than the
+            // clock steps above make, since those at least move the colony's own clock. The point of
+            // the live channel is inspecting a running game, and "show me that icon at gizmo size"
+            // is the shape of question it exists to answer.
+            SelectStep.StepType, OpenArchitectStep.StepType, ShowTexturesStep.StepType,
         };
 
         Assert.That(StepRegistry.LiveCallableTypes, Is.EquivalentTo(expected));

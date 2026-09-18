@@ -1572,6 +1572,112 @@ public class ApiCompatibilityTests
             "FogGrid.ClearAllFog no longer exists — a freshly generated orbital map would screenshot black");
     }
 
+    // --- The UI steps (Select / OpenArchitect / ShowTextures) ---
+    //
+    // These matter more than the average pin because the whole point of the three steps is to make
+    // interface state photographable, and every way they can break is SILENT. A renamed private
+    // field fails at runtime inside a reflection call; a step that quietly selects nothing or opens
+    // nothing still returns success and still produces a frame. The frame just shows a bare map,
+    // which is indistinguishable from the mod under test having drawn nothing — the exact confusion
+    // these steps were added to remove.
+
+    [Test]
+    public void Selector_Select_ExistsWithTheOverloadSelectActionCalls()
+    {
+        var type = GetType(_game, "RimWorld.Selector");
+        Assert.That(type, Is.Not.Null);
+        var select = type!.Methods.SingleOrDefault(
+            m => m.Name == "Select" && m.Parameters.Count == 3 &&
+                 m.Parameters[0].ParameterType.FullName == "System.Object");
+        Assert.That(select, Is.Not.Null,
+            "Selector.Select(object, bool, bool) no longer exists — Select would stop compiling");
+        Assert.That(type.Methods.Any(m => m.Name == "ClearSelection"), Is.True,
+            "Selector.ClearSelection no longer exists — Select could not replace the previous selection");
+    }
+
+    [Test]
+    public void ListerThings_ThingsOfDef_Exists()
+    {
+        var type = GetType(_game, "Verse.ListerThings");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(type!.Methods.SingleOrDefault(m => m.Name == "ThingsOfDef"), Is.Not.Null,
+            "ListerThings.ThingsOfDef no longer exists — Select cannot find anything to select");
+    }
+
+    [Test]
+    public void MainTabsRoot_TabSwitchingMethodsExist()
+    {
+        var type = GetType(_game, "RimWorld.MainTabsRoot");
+        Assert.That(type, Is.Not.Null);
+        Assert.That(type!.Methods.Any(m => m.Name == "SetCurrentTab"), Is.True,
+            "MainTabsRoot.SetCurrentTab no longer exists — OpenArchitect cannot open the menu");
+        Assert.That(type.Methods.Any(m => m.Name == "EscapeCurrentTab"), Is.True,
+            "MainTabsRoot.EscapeCurrentTab no longer exists — the soft reset cannot close a menu " +
+            "a scenario left open, so the next scenario photographs it");
+    }
+
+    // The one genuinely fragile dependency of the three. OpenArchitect reads a PRIVATE field by
+    // name through AccessTools, because the window compares selectedDesPanel by reference when it
+    // highlights the open category — a freshly constructed look-alike draws the designator grid
+    // correctly and leaves the category button unlit, which is a wrong frame that looks right.
+    //
+    // A rename here compiles fine and fails at runtime, so this test is the only thing standing
+    // between a RimWorld update and a step that reports a clear error nobody reads until they
+    // compare two screenshots.
+    [Test]
+    public void MainTabWindow_Architect_PanelFieldsExist()
+    {
+        var type = GetType(_game, "RimWorld.MainTabWindow_Architect");
+        Assert.That(type, Is.Not.Null);
+
+        var cached = type!.Fields.SingleOrDefault(f => f.Name == "desPanelsCached");
+        Assert.That(cached, Is.Not.Null,
+            "MainTabWindow_Architect.desPanelsCached no longer exists — OpenArchitect's category " +
+            "lookup fails at runtime (it is read by reflection, so nothing catches this at build time)");
+        Assert.That(cached!.FieldType.FullName,
+            Is.EqualTo("System.Collections.Generic.List`1<RimWorld.ArchitectCategoryTab>"),
+            "desPanelsCached changed type — OpenArchitect's cast would fail");
+
+        var selected = type.Fields.SingleOrDefault(f => f.Name == "selectedDesPanel");
+        Assert.That(selected, Is.Not.Null,
+            "MainTabWindow_Architect.selectedDesPanel no longer exists — OpenArchitect can open the " +
+            "menu but not a category, and the frame would show the category list instead");
+        Assert.That(selected!.IsPublic, Is.True,
+            "selectedDesPanel is no longer public — OpenArchitect would stop compiling");
+    }
+
+    [Test]
+    public void ArchitectCategoryTab_DefFieldExists()
+    {
+        var type = GetType(_game, "RimWorld.ArchitectCategoryTab");
+        Assert.That(type, Is.Not.Null);
+        var def = type!.Fields.SingleOrDefault(f => f.Name == "def");
+        Assert.That(def, Is.Not.Null,
+            "ArchitectCategoryTab.def no longer exists — OpenArchitect cannot match a category name to a panel");
+        Assert.That(def!.FieldType.FullName, Is.EqualTo("Verse.DesignationCategoryDef"));
+    }
+
+    // ShowTextures' claim is that it draws icons the way the game does. That claim is only true
+    // while these two are the calls the game itself uses, so they are pinned as a pair.
+    [Test]
+    public void ShowTextures_DrawsThroughTheSameCallsTheGameDoes()
+    {
+        var widgets = GetType(_game, "Verse.Widgets");
+        Assert.That(widgets, Is.Not.Null);
+        Assert.That(widgets!.Methods.Any(m => m.Name == "DrawTextureFitted"), Is.True,
+            "Widgets.DrawTextureFitted no longer exists — the gallery would no longer be drawing " +
+            "icons the way a gizmo does, which is the whole basis for reading it as evidence");
+
+        // By exact name, not a prefix: Verse.ContentFinderRequester also starts with
+        // "Verse.ContentFinder" and has no Get, so a StartsWith match pins the wrong type and the
+        // test fails for a reason that has nothing to do with what broke.
+        var contentFinder = GetType(_game, "Verse.ContentFinder`1");
+        Assert.That(contentFinder, Is.Not.Null,
+            "Verse.ContentFinder<T> no longer exists — the gallery cannot fetch a texture by path");
+        Assert.That(contentFinder!.Methods.Any(m => m.Name == "Get"), Is.True,
+            "ContentFinder<T>.Get no longer exists");
+    }
+
     // --- helpers ---
 
     private static TypeDefinition? GetType(ModuleDefinition module, string fullName) =>

@@ -97,8 +97,19 @@ public enum ScenarioResidue
     // soft-resettable and a Profile step therefore costs a save reload before whatever follows it.
     Profiler = 1 << 12,
 
+    // Interface state: what is selected, which main tab is open, whether a harness window is up
+    // (Select / OpenArchitect / ShowTextures).
+    //
+    // Soft-resettable, and it is the first flag that genuinely is rather than being conservatively
+    // parked in the reload-only set. Nothing here is world state -- three calls put all of it back,
+    // and they are cheap enough to run unconditionally. Worth a flag of its own anyway, because a
+    // scenario that photographs "the map" while the previous one left an architect menu and an
+    // inspect pane open is contaminated in exactly the way a reader of the frame would not suspect:
+    // the map itself is pristine, and the difference looks like a UI bug in the mod under test.
+    Ui = 1 << 13,
+
     All = Clock | Latitude | FeatureFlags | TimeSpeed | Camera | ScreenshotMode | Map |
-          GameConditions | Weather | Biome | NewMap | TileProperties | Profiler,
+          GameConditions | Weather | Biome | NewMap | TileProperties | Profiler | Ui,
 }
 
 // Pure classification of a step list's residue. Kept in Shared with no game types so the whole
@@ -109,7 +120,8 @@ public static class ScenarioResidueAnalyzer
     // What Mod/WorldStateReset.Restore is able to put back. Everything not in here needs a reload.
     public const ScenarioResidue SoftResettable =
         ScenarioResidue.Clock | ScenarioResidue.Latitude | ScenarioResidue.FeatureFlags |
-        ScenarioResidue.TimeSpeed | ScenarioResidue.Camera | ScenarioResidue.ScreenshotMode;
+        ScenarioResidue.TimeSpeed | ScenarioResidue.Camera | ScenarioResidue.ScreenshotMode |
+        ScenarioResidue.Ui;
 
     // Residue only a save reload can undo. Derived from SoftResettable rather than listed separately
     // so the two can never drift: a flag added to ScenarioResidue and forgotten in SoftResettable
@@ -163,6 +175,7 @@ public static class ScenarioResidueAnalyzer
         AddIfSet(parts, residue, ScenarioResidue.TimeSpeed, "time speed");
         AddIfSet(parts, residue, ScenarioResidue.Camera, "camera");
         AddIfSet(parts, residue, ScenarioResidue.ScreenshotMode, "screenshot mode");
+        AddIfSet(parts, residue, ScenarioResidue.Ui, "selection and open windows");
         return string.Join(", ", parts);
     }
 

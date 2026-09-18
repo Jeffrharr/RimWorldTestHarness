@@ -1,5 +1,6 @@
 using System;
 using RimWorld;
+using RimWorldTestHarness.Mod.Steps.BuiltIn;
 using RimWorldTestHarness.Mod.Features;
 using RimWorldTestHarness.Shared;
 using Verse;
@@ -90,6 +91,27 @@ public static class WorldStateReset
         // hideUi=false after one that asked for true would silently get a hidden UI — a wrong image on
         // a green run.
         HarnessDebugActions.SetScreenshotMode(false);
+
+        RestoreUi();
+    }
+
+    // Selection, open main tab and harness windows — the Ui residue that Select, OpenArchitect and
+    // ShowTextures leave behind.
+    //
+    // Run unconditionally rather than only after a scenario that used those steps, which costs three
+    // no-op calls and removes a way to be wrong. The failure it prevents is quiet: a following
+    // scenario photographing the map with the previous one's architect menu and inspect pane still
+    // open looks like a UI bug in the mod under test, not like contamination, because the map itself
+    // is pristine.
+    private static void RestoreUi()
+    {
+        TextureGalleryWindow.CloseAll();
+
+        Find.Selector?.ClearSelection();
+
+        // EscapeCurrentTab rather than SetCurrentTab(null): the latter is what the game calls when
+        // switching tabs and skips the closing work a tab does on its way out.
+        Find.MainTabsRoot?.EscapeCurrentTab(playSound: false);
     }
 
     private static void RestoreCamera(WorldBaseline baseline)
