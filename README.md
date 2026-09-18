@@ -205,6 +205,21 @@ still reports success). `PlaceThings` / `SetTerrain` / `SpawnPawn` also take `cl
 | `LookAt` | `zoom` | Aims the camera at the anchor. Omit `zoom` to keep the current one. |
 | `SpawnPawn` | `kind`, `faction`, `gender`, `hediffs`, `count`, `spacing`, `clear` | Generates pawns in a row along +x from the anchor. `kind` is a `PawnKindDef` defName (`Muffalo`, `Colonist`, `Pirate`). `faction` is `wild` (default, no faction — animals/wild men), `player` (your colony), or `hostile` (a deterministic enemy faction). `gender` is `male`/`female` (omit for random). `hediffs` applies health conditions: `"Flu:0.4; MissingBodyPart@Leg; BionicArm@Arm"` — each is a `HediffDef`, optionally `@BodyPartDef` to target a part and/or `:severity`; an unknown def or a part the race lacks fails the step before any pawn spawns. `count` defaults to 1, `spacing` to 2. `clear` (default false) bulldozes the spawn cells first. Any cell that still can't take a pawn is reported, not silently skipped. |
 
+**Interface** — put UI on the screen, so it can be photographed. Every existing step aims at the
+map, and a large class of mod output never appears there: gizmos, the architect menu, ability and
+command buttons, icon art. A change that breaks any of it passes every probe *and* every screenshot,
+which is exactly the failure the visual channel exists to catch.
+
+**All three are invisible to a hidden-UI screenshot.** `Screenshot` defaults to `hideUi: true`, which
+blanks every window and button — including whatever these just arranged. Pass `hideUi: false`, or the
+frame comes back as a bare map and the run stays green.
+
+| Type | Args | Notes |
+|---|---|---|
+| `Select` | `defName`, `count` | Selects things of a `ThingDef` (`Human`, `Muffalo`, `Wall`) so their inspect pane and gizmo row draw — selection is how RimWorld decides to render gizmos at all. By def rather than by cell, so a scenario that built its scene with `PlaceThings` doesn't have to know where they landed. Fails if none are on the map, rather than selecting nothing: an empty selection photographs a bare map, which reads as the mod under test drawing nothing. `count` defaults to 1, caps at 16 — a multi-selection draws only the gizmos *common* to everything selected, so asking for more usually shows fewer. |
+| `OpenArchitect` | `category` | Opens the architect menu, and with `category` (a `DesignationCategoryDef` defName — `Structure`, `Production`, `Furniture`) the designator grid inside it. That grid is the only place in the game that shows a buildable's art as an **icon** rather than as a map texture, and they are the same `Texture2D`: `BuildableDef.ResolveIcon` assigns `uiIcon = (Texture2D)material.mainTexture`. Omit `category` to photograph the category list itself. |
+| `ShowTextures` | `paths`, `size`, `columns` | Draws named textures in a grid at a fixed pixel size, **with the dimensions each actually loaded at printed underneath**. `paths` is `;`-separated ContentFinder paths (`"UI/Icons/Misc/Foo; Things/Item/Bar"`), `size` defaults to 75 (`Gizmo.Height`, the size at which "is this texture big enough" is actually decided), `columns` to the row length. Not a mock: it fetches with `ContentFinder<Texture2D>.Get` and draws with `Widgets.DrawTextureFitted`, the same two calls a gizmo makes, on the same texture object the game is holding — what it removes is the need to navigate to whichever window happens to draw that icon. The printed size is the point as much as the picture: "32x32" under art its author shipped at 128 is a measurement, where "looks soft" is an argument. The window sits at a fixed screen position so an A/B of two runs can be differenced over that rectangle and attributed. |
+
 **Composite**
 
 | Type | Args | Notes |
