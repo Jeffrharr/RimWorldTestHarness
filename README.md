@@ -210,9 +210,12 @@ map, and a large class of mod output never appears there: gizmos, the architect 
 command buttons, icon art. A change that breaks any of it passes every probe *and* every screenshot,
 which is exactly the failure the visual channel exists to catch.
 
-**All three are invisible to a hidden-UI screenshot.** `Screenshot` defaults to `hideUi: true`, which
-blanks every window and button — including whatever these just arranged. Pass `hideUi: false`, or the
-frame comes back as a bare map and the run stays green.
+**All three are invisible to a hidden-UI screenshot** — they arrange exactly the windows and buttons
+that `hideUi: true` blanks, so a scenario using them wants `hideUi: false` or the frame comes back as
+a bare map while the run stays green. See "`hideUi`, and the first capture of a run" below for the
+rest of that story, including why the first capture of a run carries a HUD that differs between runs;
+that is the same noise an A/B over these steps has to account for, and a same-build control run is
+the cheapest way to show it did.
 
 | Type | Args | Notes |
 |---|---|---|
