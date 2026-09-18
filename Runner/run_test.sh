@@ -900,14 +900,34 @@ fi
 # final else-branch calls SetupForQuickTestPlay() + InitNewGame() when there's no autostart save
 # and no gameToLoad — see DESIGN.md. The fallback is fine for probes whose value depends only on
 # scripted state (latitude/season/time), not on which colony/pawns exist — e.g. shadow_lean.
-FIXTURE_SAVE="$REPO_DIR/Fixtures/$SAVE_FILE"
-if [[ -f "$FIXTURE_SAVE" ]]; then
-    USE_QUICKTEST=0
-    log "Save source: fixture $FIXTURE_SAVE (loaded via vanilla autostart mechanism)."
-else
-    USE_QUICKTEST=1
-    log "Save source: no fixture at $FIXTURE_SAVE — using -quicktest to generate a fresh colony."
-fi
+# A function rather than a straight-line block so Tests/runner can drive the SHIPPED branching
+# instead of a Python restatement of it, the same way Step 3b's overlay check is tested.
+resolve_save_source() {
+    FIXTURE_SAVE="$REPO_DIR/Fixtures/$SAVE_FILE"
+    if [[ -f "$FIXTURE_SAVE" ]]; then
+        USE_QUICKTEST=0
+        log "Save source: fixture $FIXTURE_SAVE (loaded via vanilla autostart mechanism)."
+    elif [[ -n "$SAVE_FILE" ]]; then
+        # A scenario that NAMES a fixture and silently gets a random world instead has been downgraded
+        # to a weaker test while still reporting green, which is the failure this repo exists to refuse.
+        # It used to fall through to -quicktest here with one log line, and that line is easy to skim:
+        # the symptom surfaces later as two arms of an A/B that disagree about everything, because each
+        # generated its own world. Measured when it happened: 92% of pixels changed between arms, a
+        # whole in-game day apart, one of them under a "permanent summer" condition the other never had.
+        #
+        # The overwhelmingly likely cause is a WORKTREE. Fixtures/*.rws is gitignored (they are
+        # multi-megabyte binaries), so `git worktree add` produces a tree with no fixtures at all, and
+        # every scenario naming one quietly loses it. Hence the hint rather than a bare "not found".
+        fail "scenario names saveFile '$SAVE_FILE' but there is no fixture at $FIXTURE_SAVE.
+       Fixtures/*.rws is gitignored, so a git worktree starts without any — symlink or copy them in:
+         ln -s <main-checkout>/Fixtures/*.rws $REPO_DIR/Fixtures/
+       Omit saveFile from the scenario if a random -quicktest colony really is what you want."
+    else
+        USE_QUICKTEST=1
+        log "Save source: no saveFile named — using -quicktest to generate a fresh colony."
+    fi
+}
+resolve_save_source
 
 HARNESS_DLL="$REPO_DIR/$GAME_VERSION/Assemblies/RimWorldTestHarness.dll"
 [[ -f "$HARNESS_DLL" ]] || fail "$HARNESS_DLL missing — run RimWorldTestHarness/build.sh first."
