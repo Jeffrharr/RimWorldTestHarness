@@ -152,6 +152,28 @@ set -euo pipefail
 RIMWORLD="/home/deck/.local/share/Steam/steamapps/common/RimWorld"
 MODS_DIR="$RIMWORLD/Mods"
 
+# WHICH ENGINE THE INSTALL IS. RimWorld 1.6 is a Unity player (RimWorldLinux, Mono); 1.7 is Ludeon's
+# Waylith engine on .NET 10, launched through a native apphost named plain `RimWorld` with
+# Waylith.dll beside it. The two differ in exactly the places this script touches the process — the
+# binary name it launches, pgreps and checks /proc/<pid>/comm against, and where Player.log goes (see
+# PLAYER_LOG below) — so the difference is decided once here and every other line reads GAME_BIN.
+# Waylith.dll is the tell rather than the apphost alone, because "RimWorld" is also a perfectly good
+# name for a wrapper script someone might drop into a 1.6 install.
+if [[ -f "$RIMWORLD/Waylith.dll" && -x "$RIMWORLD/RimWorld" ]]; then
+    ENGINE=waylith
+    GAME_BIN=RimWorld
+else
+    ENGINE=unity
+    GAME_BIN=RimWorldLinux
+fi
+
+# The version folder (1.6, 1.7, ...) whose Assemblies/ RimWorld will load for this install: major.minor
+# of Version.txt, which is exactly what ModContentPack.InitLoadFolders matches a folder name against.
+# Every path below that names a build output reads this instead of a literal, so the same script
+# drives either install and an overlay can never install a 1.6 build into a 1.7 game or vice versa.
+GAME_VERSION="$(grep -oE '^[0-9]+\.[0-9]+' "$RIMWORLD/Version.txt" 2>/dev/null || true)"
+GAME_VERSION="${GAME_VERSION:-1.6}"
+
 # Where Steam puts subscribed RimWorld mods. Only consulted by --profiler, which is the one flag that
 # names a specific Workshop mod rather than taking a folder from the caller.
 WORKSHOP_DIR="${RWTH_WORKSHOP_DIR:-$RIMWORLD/../../workshop/content/294100}"
@@ -187,6 +209,16 @@ fi
 # loaded" / "RWTH: scenario complete", and a shared log means one run reads another's markers. Unity's
 # -logfile (already passed at launch) is what makes this a one-line change.
 PLAYER_LOG="$RUN_TMP_DIR/Player.log"
+
+# WAYLITH HAS NO -logfile. Its FileLog always writes <log root>/Logs/Player.log, where the log root is
+# $XDG_CONFIG_HOME/unity3d/Ludeon Studios/RimWorld by Ludeon Studios (Bootstrap.ResolveLogDataRoot —
+# it does NOT follow -savedatafolder), and on startup it renames any existing Player.log to
+# Player-prev.log before creating a fresh one. So on 1.7 PLAYER_LOG becomes a SYMLINK to that fixed
+# path (link_waylith_log), which keeps every grep below unchanged, and teardown swaps the link for a
+# copy (snapshot_waylith_log) so the run keeps its evidence after the next launch rotates it away.
+# One log per machine is safe only because this script already refuses to start while any game is
+# running and holds the run lock for its whole life.
+WAYLITH_LOG="${XDG_CONFIG_HOME:-$HOME/.config}/unity3d/Ludeon Studios/RimWorld by Ludeon Studios/Logs/Player.log"
 MODSCONFIG="$CONFIG_DIR/Config/ModsConfig.xml"
 
 # Prefs.xml is swapped for exactly one reason: <devMode>. Vanilla's autostart-save mechanism is gated
@@ -462,13 +494,13 @@ for overlay_arg in ${MOD_OVERLAY_DIRS[@]+"${MOD_OVERLAY_DIRS[@]}"}; do
             fail "'$overlay_dir' is passed as both --mod and --mod-overlay. Use --mod-overlay alone: it installs this build over the already-installed copy, which is what makes the game load it."
         fi
     done
-    overlay_src="$overlay_dir/1.6/Assemblies"
+    overlay_src="$overlay_dir/$GAME_VERSION/Assemblies"
     [[ -d "$overlay_src" ]] ||
-        fail "--mod-overlay '$overlay_dir' has no 1.6/Assemblies — run its build.sh first."
+        fail "--mod-overlay '$overlay_dir' has no $GAME_VERSION/Assemblies — run its build.sh first (it must build for RimWorld $GAME_VERSION)."
     overlay_id="$(read_package_id "$overlay_dir")" ||
         fail "--mod-overlay '$overlay_dir': could not read its packageId."
     overlay_target="$(resolve_overlay_target "$overlay_id" "$overlay_dir")"
-    overlay_dest="$overlay_target/1.6/Assemblies"
+    overlay_dest="$overlay_target/$GAME_VERSION/Assemblies"
     INSTALL_PAIRS+=("$overlay_src:$overlay_dest")
     MOD_OVERLAY_ARGS+=("$overlay_dir")
     MOD_OVERLAY_IDS+=("$overlay_id")
@@ -522,6 +554,20 @@ resolve_profiler_mod() {
     # First match wins here, unlike --mod-overlay's hard failure on ambiguity, because the two copies
     # of this mod are the SAME mod and either one profiles identically — there is no wrong choice to
     # protect against, and MODS_DIR is scanned first so the local copy is the one taken.
+    # NO BUILD FOR THIS GAME VERSION: SKIP RATHER THAN GUESS. Without a $GAME_VERSION/ folder RimWorld
+    # falls back to the analyzer's newest older one, so on 1.7 the game would load its net481 build.
+    # Waylith's runtimeconfig turns on a set of lax-binding switches that may well make that work, but
+    # nobody has checked, and a profiler that half-loads produces cost tables nobody can trust. Until
+    # someone verifies it, same rule as not-installed: a hard failure when asked for by name, a
+    # reasoned skip when merely on by default.
+    if [[ ! -d "${matches[0]#*|}/$GAME_VERSION" ]]; then
+        if (( PROFILER_EXPLICIT )); then
+            fail "--profiler: the installed Dubs Performance Analyzer (${matches[0]#*|}) has no build for RimWorld $GAME_VERSION. Drop the flag until it updates."
+        fi
+        PROFILER_SKIP_REASON="Dubs Performance Analyzer is installed but has no build for RimWorld $GAME_VERSION, so nothing was profiled. Pass --no-profiler to stop asking."
+        log "profiler: installed, but no $GAME_VERSION build — this run will NOT be profiled."
+        return 0
+    fi
     PROFILER_MOD_ID="${matches[0]%%|*}"
     log "profiler: Dubs Performance Analyzer '$PROFILER_MOD_ID' (${matches[0]#*|})"
     log "profiler: WARNING — the analyzer instruments every Harmony patch in this load. Timings from"
@@ -678,6 +724,8 @@ print_config() {
     echo "SAVES_DIR=$SAVES_DIR"
     echo "AUTOSTART_SAVE=$AUTOSTART_SAVE"
     echo "PLAYER_LOG=$PLAYER_LOG"
+    echo "ENGINE=$ENGINE GAME_BIN=$GAME_BIN GAME_VERSION=$GAME_VERSION"
+    [[ "$ENGINE" == waylith ]] && echo "WAYLITH_LOG=$WAYLITH_LOG"
     echo "RIMWORLD_STDERR=$RIMWORLD_STDERR"
     echo "LOCK_FILE=$LOCK_FILE"
     echo "LEDGER_FILE=$LEDGER_FILE"
@@ -721,7 +769,7 @@ fi
 command -v jq >/dev/null || fail "jq not found on PATH."
 command -v python3 >/dev/null || fail "python3 not found on PATH."
 command -v flock >/dev/null || fail "flock not found on PATH (needed for the run guard)."
-[[ -x "$RIMWORLD/RimWorldLinux" ]] || fail "RimWorldLinux not found at $RIMWORLD."
+[[ -x "$RIMWORLD/$GAME_BIN" ]] || fail "$GAME_BIN not found at $RIMWORLD."
 
 # GenCommandLine.TryGetCommandLineArg splits on '=' and requires exactly two halves, so a save-data
 # path containing '=' would be silently ignored and the game would use the real config dir.
@@ -757,7 +805,7 @@ fi
 # alive-vs-matching distinction rimworld_alive() further down had to make for a different reason.
 live_rimworld_pids() {
     local pid state
-    for pid in $(pgrep -x RimWorldLinux 2>/dev/null); do
+    for pid in $(pgrep -x "$GAME_BIN" 2>/dev/null); do
         # Empty state == it exited between pgrep and here; Z* == zombie. Neither one is alive.
         state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
         if [[ -n "$state" && "$state" != Z* ]]; then
@@ -767,7 +815,7 @@ live_rimworld_pids() {
 }
 LIVE_RIMWORLD="$(live_rimworld_pids | tr '\n' ' ')"
 if [[ -n "${LIVE_RIMWORLD// /}" ]]; then
-    fail "a RimWorldLinux process is already running (PID(s): ${LIVE_RIMWORLD%% }) — close it first. This run will not kill it (it may be your game, or another agent's run)."
+    fail "a $GAME_BIN process is already running (PID(s): ${LIVE_RIMWORLD%% }) — close it first. This run will not kill it (it may be your game, or another agent's run)."
 fi
 
 # ---------------------------------------------------------------------------
@@ -856,7 +904,7 @@ else
     log "Save source: no fixture at $FIXTURE_SAVE — using -quicktest to generate a fresh colony."
 fi
 
-HARNESS_DLL="$REPO_DIR/1.6/Assemblies/RimWorldTestHarness.dll"
+HARNESS_DLL="$REPO_DIR/$GAME_VERSION/Assemblies/RimWorldTestHarness.dll"
 [[ -f "$HARNESS_DLL" ]] || fail "$HARNESS_DLL missing — run RimWorldTestHarness/build.sh first."
 
 # A mod under test with no built assembly is WARNED about, not failed on: a Defs-only XML mod is a
@@ -1056,6 +1104,9 @@ cleanup() {
         log "--hold: leaving RimWorld (PID ${RIMWORLD_PID:-?}) running. It is yours now."
     else
         kill_rimworld
+        # After the kill, so the copy holds everything the game wrote (Waylith flushes on a timer).
+        # Not under --hold: the game is still writing, and the live link is the more useful thing.
+        snapshot_waylith_log
     fi
     if [[ $NO_TEARDOWN -eq 0 ]]; then
         teardown
@@ -1217,8 +1268,21 @@ import json, os, re, sys
 
 path = sys.argv[1]
 orig = open(path, encoding="utf-8").read()
+# THE INSTALLED GAME'S VERSION, NOT THE OLD FILE'S. RimWorld compares this against itself on boot and,
+# on a mismatch, logs "Mods config data is from version X ... Resetting." and throws activeMods away —
+# keeping only the DLC. Copying the user's <version> through was harmless while it always matched,
+# but the first launch after a game update (1.6 -> 1.7) carries the old number, so the reset dropped
+# the harness and every mod under test: the game booted and loaded the fixture, nothing ran a
+# scenario, and the run sat waiting for a report until it timed out. Version.txt is exactly the
+# string the game writes back here itself. Falls back to the file's own value if it cannot be read.
 m = re.search(r"<version>(.*?)</version>", orig, re.S)
 version = m.group(1).strip() if m else ""
+try:
+    installed = open(os.path.join(os.environ["RIMWORLD"], "Version.txt"), encoding="utf-8").read().strip()
+    if installed:
+        version = installed
+except OSError:
+    pass
 m = re.search(r"<knownExpansions>.*?</knownExpansions>", orig, re.S)
 known = m.group(0) if m else "<knownExpansions />"
 
@@ -1450,7 +1514,7 @@ some_mod_lives_under() {
 warn_on_split_build() {
     local overlay_src overlay_root
     for overlay_src in ${INSTALL_SRCS[@]+"${INSTALL_SRCS[@]}"}; do
-        overlay_root="${overlay_src%/1.6/Assemblies}"
+        overlay_root="${overlay_src%/"$GAME_VERSION"/Assemblies}"
         if some_mod_lives_under "$overlay_root"; then
             continue   # a --mod folder comes from the overlaid tree, so they share a build
         fi
@@ -1488,6 +1552,35 @@ assert_savedata_folder() {
     fail "isolation not confirmed — RimWorld never logged '$expected', so it may have used the real config dir. Check $PLAYER_LOG."
 }
 
+# 1.7 only: point PLAYER_LOG at Waylith's fixed log path (see WAYLITH_LOG). The existing log is moved
+# aside FIRST, because until the game starts and rotates it itself, the link would resolve to the
+# previous run's file — whose "RWTH: harness loaded" and "scenario complete" markers this script would
+# then read as its own, and pass a run that never booted. An earlier attempt's snapshot in this same
+# run is kept under a numbered name rather than overwritten.
+link_waylith_log() {
+    mkdir -p "$(dirname "$WAYLITH_LOG")"
+    if [[ -f "$WAYLITH_LOG" ]]; then
+        mv -f "$WAYLITH_LOG" "${WAYLITH_LOG%.log}-prev.log"
+    fi
+    if [[ -f "$PLAYER_LOG" && ! -L "$PLAYER_LOG" ]]; then
+        mv -f "$PLAYER_LOG" "$RUN_TMP_DIR/Player.attempt-$(date +%s%N).log"
+    fi
+    ln -sfn "$WAYLITH_LOG" "$PLAYER_LOG"
+}
+
+# 1.7 only: replace the PLAYER_LOG symlink with a real copy, so the run dir keeps its evidence after
+# the next launch (ours or the user's) rotates the shared file away. Idempotent and safe to call from
+# teardown on any path, including one where the game never started and there is nothing to copy.
+snapshot_waylith_log() {
+    [[ "$ENGINE" == waylith && -L "$PLAYER_LOG" ]] || return 0
+    local tmp="$PLAYER_LOG.copy"
+    if cp -f "$WAYLITH_LOG" "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$PLAYER_LOG"
+    else
+        rm -f "$PLAYER_LOG"
+    fi
+}
+
 launch_rimworld() {
     local max_retries=5
     local attempt=0
@@ -1500,7 +1593,11 @@ launch_rimworld() {
         # instance existed, and if one appeared since it isn't ours to kill.
         kill_rimworld
 
-        : > "$PLAYER_LOG"
+        if [[ "$ENGINE" == waylith ]]; then
+            link_waylith_log
+        else
+            : > "$PLAYER_LOG"
+        fi
         : > "$RIMWORLD_STDERR"
         rm -f "$REPORT_PATH"
 
@@ -1576,15 +1673,19 @@ launch_rimworld() {
         # process tree on teardown. nohup sets that signal to ignore and the disposition survives the
         # exec into the game. Stdin comes from /dev/null for the same reason: an inherited stdin that
         # closes is another way for a detached process to be told to go away.
+        # --no-sandbox and -logfile are Unity player arguments. Waylith takes neither: its log goes
+        # where link_waylith_log already pointed PLAYER_LOG.
+        local engine_args=()
+        [[ "$ENGINE" == unity ]] && engine_args=(--no-sandbox -logfile "$PLAYER_LOG")
+
         local launcher=()
         (( HOLD )) && launcher=(setsid nohup)
 
         env "${harness_env[@]}" RWTH_REPORT="$REPORT_PATH" \
             "${launcher[@]}" \
-            "$RIMWORLD/RimWorldLinux" --no-sandbox \
+            "$RIMWORLD/$GAME_BIN" "${engine_args[@]}" \
             "${quicktest_arg[@]}" \
             "${savedata_arg[@]}" \
-            -logfile "$PLAYER_LOG" \
             </dev/null 2>"$RIMWORLD_STDERR" 9>&- &
         # 9>&- closes the run lock in the child: flock lives on the open file description, which a
         # forked game would otherwise keep held past our exit and lock out every later run.
@@ -1595,11 +1696,11 @@ launch_rimworld() {
             # forking setsid would leave us holding a pid that exits immediately, which presents as
             # "the game died during startup" for a reason that has nothing to do with the game.
             sleep 1
-            if [[ "$(cat "/proc/$RIMWORLD_PID/comm" 2>/dev/null)" != "RimWorldLinux" ]]; then
+            if [[ "$(cat "/proc/$RIMWORLD_PID/comm" 2>/dev/null)" != "$GAME_BIN" ]]; then
                 fail "--hold: setsid forked, so PID $RIMWORLD_PID is not the game and this run could not track it. Launch without --hold, or teach this script to resolve the child pid."
             fi
         fi
-        log "RimWorldLinux PID: $RIMWORLD_PID"
+        log "$GAME_BIN PID: $RIMWORLD_PID"
 
         local waited=0
         while (( waited < 60 )); do
@@ -1625,7 +1726,7 @@ launch_rimworld() {
                 fi
                 continue
             else
-                fail "RimWorldLinux exited AFTER mod load (PID $RIMWORLD_PID) — real crash. Check $PLAYER_LOG."
+                fail "$GAME_BIN exited AFTER mod load (PID $RIMWORLD_PID) — real crash. Check $PLAYER_LOG."
             fi
         fi
 
@@ -1721,7 +1822,7 @@ elapsed=0
 timeout_secs=900
 while [[ ! -f "$REPORT_PATH" ]]; do
     if ! rimworld_alive; then
-        fail "RimWorldLinux exited before writing a report. Check $PLAYER_LOG."
+        fail "$GAME_BIN exited before writing a report. Check $PLAYER_LOG."
     fi
     sleep 5
     elapsed=$((elapsed + 5))
