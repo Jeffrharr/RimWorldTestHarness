@@ -206,10 +206,37 @@ class OverlayClaims(ClaimTestCase):
             asset_claims.claim_overlay(self.ledger, self.src_dir, self.dest_dir)
         self.assertIn("no files", str(caught.exception))
 
-    def test_missing_destination_is_refused(self):
+    def test_missing_destination_is_created_and_pruned_on_restore(self):
+        """A branch can ship a folder the installed copy has never had — 1.7/AssetBundles over a main
+        checkout that predates 1.7. The overlay creates it, and rollback removes every directory it
+        made, because an empty 1.7/ left behind would change which load folder RimWorld picks."""
+        write(os.path.join(self.src_dir, "bundle"), "BRANCH")
+        mod_root = self.path("main")
+        dest = self.path("main", "1.7", "AssetBundles")
+
+        asset_claims.claim_overlay(self.ledger, self.src_dir, dest)
+        self.assertEqual(read(os.path.join(dest, "bundle")), "BRANCH")
+
+        self.restore()
+        self.assertFalse(os.path.exists(self.path("main", "1.7")), "created directories must not outlive the run")
+        self.assertTrue(os.path.isdir(mod_root), "a directory that already existed must be left alone")
+
+    def test_pruning_stops_at_a_directory_still_holding_an_older_claims_file(self):
+        """Claims roll back newest first: the first restored must not take a directory a sibling
+        still occupies, and the last one out removes it."""
+        write(os.path.join(self.src_dir, "a"), "A")
+        write(os.path.join(self.src_dir, "b"), "B")
+        dest = self.path("main", "Common", "Defs")
+
+        asset_claims.claim_overlay(self.ledger, self.src_dir, dest)
+        self.restore()
+        self.assertFalse(os.path.exists(self.path("main", "Common")))
+
+    def test_destination_that_is_a_file_is_refused(self):
         write(os.path.join(self.src_dir, "Mod.dll"), "BRANCH")
+        blocker = write(self.path("main", "1.7"), "not a directory")
         with self.assertRaises(asset_claims.ClaimError):
-            asset_claims.claim_overlay(self.ledger, self.src_dir, self.path("does", "not", "exist"))
+            asset_claims.claim_overlay(self.ledger, self.src_dir, blocker)
 
 
 class SymlinkClaims(ClaimTestCase):

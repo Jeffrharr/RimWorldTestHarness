@@ -655,9 +655,14 @@ for pair in ${INSTALL_PAIRS[@]+"${INSTALL_PAIRS[@]}"}; do
         fail "--install paths may not contain ':' (got '$pair')."
     fi
     [[ -d "$install_src" ]] || fail "--install source '$install_src' is not a directory."
-    [[ -d "$install_dest" ]] || fail "--install destination '$install_dest' is not a directory."
+    # A destination that does not exist yet is fine — asset_claims creates it and prunes it on
+    # rollback, which is what lets a branch install a folder the installed copy has never had (a new
+    # game version's 1.7/AssetBundles). Something other than a directory standing there is not.
+    if [[ -e "$install_dest" && ! -d "$install_dest" ]]; then
+        fail "--install destination '$install_dest' exists and is not a directory."
+    fi
     INSTALL_SRCS+=("$(cd "$install_src" && pwd)")
-    INSTALL_DESTS+=("$(cd "$install_dest" && pwd)")
+    INSTALL_DESTS+=("$(realpath -m "$install_dest")")
 done
 
 # A --suite list contributes its entries alongside any given on the command line, so the two ways of

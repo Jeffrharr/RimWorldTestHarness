@@ -203,6 +203,11 @@ def claim_path(ledger_path, dest, src=None):
         "backup": None,
         "prior_target": None,
         "installed_sha256": None,
+        # Directories this claim had to create to put dest in place, deepest first. Rollback removes
+        # them again once empty, so installing into a folder the target never had (a new version's
+        # 1.7/AssetBundles over a main checkout that predates it) leaves no empty husk behind — an
+        # empty 1.7/ alone is enough to change which load folder RimWorld picks for that mod.
+        "created_dirs": [],
     }
 
     if prior == PRIOR_SYMLINK:
@@ -218,6 +223,10 @@ def claim_path(ledger_path, dest, src=None):
         src = os.path.abspath(src)
         if not os.path.isfile(src):
             raise ClaimError(f"install source {src} is not a regular file")
+        parent = os.path.dirname(dest)
+        while not os.path.isdir(parent):
+            claim["created_dirs"].append(parent)
+            parent = os.path.dirname(parent)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         # The link, if any, is removed rather than followed: copying onto a symlink writes through
         # it and would modify the link's target — a file this run never claimed and cannot restore.
@@ -249,7 +258,9 @@ def claim_overlay(ledger_path, src_dir, dest_dir):
     dest_dir = os.path.abspath(dest_dir)
     if not os.path.isdir(src_dir):
         raise ClaimError(f"overlay source {src_dir} is not a directory")
-    if not os.path.isdir(dest_dir):
+    # A MISSING destination is allowed and created (each claim records the directories it made, and
+    # rollback prunes them). Something else standing at that path is still refused.
+    if os.path.lexists(dest_dir) and not os.path.isdir(dest_dir):
         raise ClaimError(f"overlay destination {dest_dir} is not a directory")
 
     members = files_under(src_dir)
@@ -341,6 +352,18 @@ def seal(ledger_path, dest):
 # ---------------------------------------------------------------------------
 # Restoring
 # ---------------------------------------------------------------------------
+def _prune_created_dirs(claim):
+    """Remove the directories a claim created, deepest first, stopping at the first that is not empty.
+
+    Not-empty is not an error: claims roll back newest-first, so a sibling file from an older claim
+    can still be present, and that claim prunes the directory when its own turn comes."""
+    for directory in claim.get("created_dirs") or []:
+        try:
+            os.rmdir(directory)
+        except OSError:
+            return
+
+
 def _restore_path_claim(claim, guard):
     """Undo one path claim. Returns (action, detail) for reporting."""
     path = claim["path"]
@@ -360,6 +383,7 @@ def _restore_path_claim(claim, guard):
     if prior == PRIOR_ABSENT:
         if os.path.lexists(path):
             os.unlink(path)
+        _prune_created_dirs(claim)
         return ("removed", "nothing was there before")
     if prior == PRIOR_SYMLINK:
         if os.path.lexists(path):
