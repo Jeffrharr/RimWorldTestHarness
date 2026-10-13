@@ -14,15 +14,30 @@ namespace RimWorldTestHarness.ApiTests;
 [Category("RequiresGameDll")]
 public class ApiCompatibilityTests
 {
-    private const string FallbackAssemblyCSharpPath =
-        "/home/deck/.local/share/Steam/steamapps/common/RimWorld/RimWorldLinux_Data/Managed/Assembly-CSharp.dll";
-    private const string FallbackScreenCaptureModulePath =
-        "/home/deck/.local/share/Steam/steamapps/common/RimWorld/RimWorldLinux_Data/Managed/UnityEngine.ScreenCaptureModule.dll";
+    private const string GameDir = "/home/deck/.local/share/Steam/steamapps/common/RimWorld";
+
+    // Newest layout first. RimWorld 1.7 (Waylith) keeps Assembly-CSharp in the game root and supplies
+    // UnityEngine.ScreenCapture from UnityStubs.dll; 1.6 (Unity) kept both under RimWorldLinux_Data/
+    // Managed, ScreenCapture in its own module. With only the 1.6 paths, the 1.7 update turned this
+    // whole fixture into silent skips while the suite still reported green.
+    private static readonly string[] AssemblyCSharpCandidates =
+    {
+        GameDir + "/Assembly-CSharp.dll",
+        GameDir + "/RimWorldLinux_Data/Managed/Assembly-CSharp.dll",
+    };
+    private static readonly string[] ScreenCaptureModuleCandidates =
+    {
+        GameDir + "/UnityStubs.dll",
+        GameDir + "/RimWorldLinux_Data/Managed/UnityEngine.ScreenCaptureModule.dll",
+    };
+
+    private static string FirstExisting(string[] candidates) =>
+        candidates.FirstOrDefault(File.Exists) ?? candidates[0];
 
     private static string AssemblyCSharpPath =>
-        Environment.GetEnvironmentVariable("RIMWORLD_ASSEMBLY") ?? FallbackAssemblyCSharpPath;
+        Environment.GetEnvironmentVariable("RIMWORLD_ASSEMBLY") ?? FirstExisting(AssemblyCSharpCandidates);
     private static string ScreenCaptureModulePath =>
-        Environment.GetEnvironmentVariable("RIMWORLD_SCREENCAPTURE_ASSEMBLY") ?? FallbackScreenCaptureModulePath;
+        Environment.GetEnvironmentVariable("RIMWORLD_SCREENCAPTURE_ASSEMBLY") ?? FirstExisting(ScreenCaptureModuleCandidates);
 
     private ModuleDefinition _game = null!;
     private ModuleDefinition _screenCapture = null!;
