@@ -1,16 +1,40 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!-- Two game versions from one project, same arrangement as CelestialLighting.csproj: RimWorld 1.6
+       is Unity/Mono (net481), RimWorld 1.7 is Ludeon's Waylith engine on .NET 10 (net10.0), with
+       UnityEngine supplied by UnityStubs.dll. Version-specific code goes behind #if RIMWORLD_1_7.
+       Needs the .NET 10 SDK in ~/.dotnet10 (see build.sh). -->
   <PropertyGroup>
-    <TargetFramework>net481</TargetFramework>
+    <TargetFrameworks>net481;net10.0</TargetFrameworks>
+    <RimWorldDir Condition="'$(RimWorldDir)' == ''">$(HOME)/.local/share/Steam/steamapps/common/RimWorld</RimWorldDir>
+    <HarmonyModDir Condition="'$(HarmonyModDir)' == ''">$(HOME)/.local/share/Steam/steamapps/workshop/content/294100/2009463077</HarmonyModDir>
     <AssemblyName>RimWorldTestHarness</AssemblyName>
     <RootNamespace>RimWorldTestHarness.Mod</RootNamespace>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
-    <OutputPath>../1.6/Assemblies</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
   </PropertyGroup>
 
-  <ItemGroup>
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net481'">
+    <OutputPath>../1.6/Assemblies</OutputPath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <OutputPath>../1.7/Assemblies</OutputPath>
+    <DefineConstants>$(DefineConstants);RIMWORLD_1_7</DefineConstants>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <!-- RimWorld loads Assemblies/*.dll itself and never reads a deps.json. -->
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <!-- No Krafs package exists for 1.7: reference the installed game. Private=false — these ship
+         with the game or brrainz.harmony and must never be copied into 1.7/Assemblies. -->
+    <Reference Include="Assembly-CSharp" HintPath="$(RimWorldDir)/Assembly-CSharp.dll" Private="false" />
+    <Reference Include="UnityStubs" HintPath="$(RimWorldDir)/UnityStubs.dll" Private="false" />
+    <Reference Include="Waylith" HintPath="$(RimWorldDir)/Waylith.dll" Private="false" />
+    <Reference Include="0Harmony" HintPath="$(HarmonyModDir)/1.7/Assemblies/0Harmony.dll" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net481'">
     <PackageReference Include="Krafs.Rimworld.Ref" Version="1.6.*" />
     <!-- Compile-time only: depend on the standalone brrainz.harmony Workshop mod (declared as a
          hard <modDependencies> requirement in About.xml) providing 0Harmony.dll at runtime instead
